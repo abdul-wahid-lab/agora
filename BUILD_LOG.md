@@ -16,6 +16,31 @@ and Phase 3 (calling) doesn't start until 1 and 2 are solid on real devices.
 | 4 — Hybrid mode | ⏳ not started | 6.2, 7.1 |
 | 5 — Polish | ⏳ not started | 6.1, 6.3–6.5 |
 
+## Test it yourself
+
+There's no UI wired up yet — Phases 1 and 2 are CLI-only for now (`app.cli_chat`), by design, per the spec's own "prove the transport before touching UI" instruction.
+
+**Quick test, one machine, two terminals.** In both, `cd D:\Agora\backend` first.
+
+Terminal 1:
+```powershell
+.\agora\Scripts\python.exe -m app.cli_chat --name Alice --port 8001
+```
+Terminal 2:
+```powershell
+.\agora\Scripts\python.exe -m app.cli_chat --name Bob --port 8002
+```
+Wait a couple seconds, then in either one: `peers` (the other should show up), then `Bob hey can you see this` (or `Alice ...` from Bob's side) to send a message, then `history Bob` to confirm it went `pending → sent → delivered`. Kill one with Ctrl+C mid-conversation and watch the other's `peers` list drop it after ~10s (TTL/leave detection).
+
+**Real test, two actual devices on the same WiFi** — the one that actually matters, since the spec explicitly warns single-machine testing can hide bugs that only show up across real network interfaces:
+
+1. Copy `backend/` to the second device (don't copy the `agora/` venv folder itself — rebuild a fresh venv there from `requirements.txt`).
+2. Run the same `cli_chat.py` command on each device — ports can both be `8001` since they're different machines.
+3. **Windows will likely prompt a Firewall dialog** the first time each side starts listening — click **Allow access** for Private networks, or incoming connections get silently blocked even though discovery still shows the peer.
+4. Same `peers` / `<name> <message>` / `history <name>` commands as above.
+
+If peers show up in `peers` but messages stay stuck on `pending` forever, that's very likely **router AP/client isolation** (spec §4's known edge case) — try a phone hotspot as a comparison, since hotspots don't isolate clients from each other.
+
 ---
 
 ## Environment / Setup
