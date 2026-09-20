@@ -235,3 +235,69 @@ show their live network presence state clearly — this is the single most impor
 piece of information in the whole app, since the entire value proposition is
 "who can I actually reach right now."
 ```
+
+---
+
+## 9. Standalone Design Prompt — File Sharing
+
+Self-contained — paste this into a design tool on its own (Figma AI, v0, or similar) to design just the file-sharing screens/states without needing the rest of this doc. Repeats the design direction so it isn't lost.
+
+```
+Design the file-sharing screens and states for "Agora," a LAN-first chat app. Mood:
+warm, local, "same room" — not corporate/cloud-enterprise. Rounded shapes, warm neutral
+background, one accent color tied to presence (amber/coral, "hearth" not "cold tech
+blue"). Reuse the app's existing "presence pulse" motif where it fits naturally (e.g. a
+gentle pulse on an active transfer's progress ring) rather than inventing a new one.
+
+Files can be ANY type — documents, photos/video, APKs, game files/ROMs, archives — sent
+directly between two people already chatting. No type is blocked, but risk is
+communicated through the design of these states, not by hiding a "Files" option.
+
+Design these, each as its own clear state/screen:
+
+1. ATTACHMENT PICKER SHEET — opened from the chat input's attachment icon. Simple
+   options: Photos, Files, Browse. Should feel as lightweight as picking an emoji, not
+   like a heavyweight upload flow.
+
+2. SENDER PROGRESS BUBBLE — a chat bubble that is NOT a text bubble. Needs four visual
+   states in sequence: "Waiting for [name] to accept" (calm, low-emphasis) -> "Sending...
+   42% - 3.1 MB/s - ~8s left" (an inline progress bar/ring, live numbers) -> "Sent" (quiet
+   checkmark, settles into a normal-looking file bubble) -> "Failed - tap to retry" (clear
+   but not alarming — a dropped WiFi transfer is normal, not an error to feel bad about).
+
+3. RECEIVER CONSENT CARD (standard file) — appears before anything downloads. Shows file
+   name, size, a type-specific icon (photo/video/archive/document/other — each visually
+   distinct at a glance, not one generic paperclip), sender name, and two clear actions:
+   Accept / Decline. Should feel like a small, low-friction decision.
+
+4. RECEIVER CONSENT CARD (installable file — .apk/.exe/.sh/etc.) — same information as
+   #3, but a deliberately different visual treatment: a warning color/icon accent (not
+   the calm amber/coral used elsewhere — this is the one place a second, cautionary color
+   is justified), and copy along the lines of "This is an installable app, not a regular
+   file — only accept it if you trust [name]." Design a SECOND confirmation step that
+   appears after the file finishes downloading, before it can be opened/installed,
+   visually related to but distinct from the accept card (e.g. a bottom-sheet with the
+   same warning treatment).
+
+5. IN-PROGRESS TRANSFER (shared by both sides) — an embedded progress bar inside the
+   bubble itself, a pause/cancel control, and a distinct "Reconnecting transfer..." state
+   (for when the peer's WiFi drops mid-transfer) that reads as "hang on, this is normal,"
+   not "something broke."
+
+6. COMPLETED FILE BUBBLE — file-type icon, name, size, Open / Save-as actions. Design at
+   least 4 distinct type icons: image/video, archive, installable app, generic/other —
+   glanceable, not a text label doing all the work.
+
+7. SHARED FILES LIST — a dedicated screen (reached from chat info/settings) listing
+   every file ever exchanged in a conversation, independent of scrolling through
+   messages. Grid or list, your call, but must scale to a game/ROM library's worth of
+   large files without feeling like a cluttered download manager.
+
+8. BANDWIDTH-SHARING NOTICE — a small inline note that appears in the chat when a large
+   transfer is automatically paused because a call started ("Pausing file transfer to
+   keep call quality up"). Low-emphasis, informative, not an alert.
+
+Keep the whole set feeling like one coherent app, not a bolted-on "files" module —
+same corner radii, same type scale, same spacing rhythm as the rest of Agora's chat
+and call screens.
+```
