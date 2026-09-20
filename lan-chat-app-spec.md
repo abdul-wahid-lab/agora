@@ -1,6 +1,8 @@
-# LAN-First Chat & Call App — Architecture + Build Plan + Coding Prompt
+# Agora — LAN-First Chat & Call App — Architecture + Build Plan + Coding Prompt
 
 A messaging + voice/video calling app that works over a local WiFi network with **zero internet dependency**, and optionally syncs/upgrades to internet mode when available.
+
+**Why "Agora"?** In ancient Greek city-states, the agora was the open public square people gathered in to talk and trade, with no central authority presiding over it — no server in the middle, no account system, no company routing the conversation. Just people in the same local space (here, the same WiFi network) talking directly.
 
 ---
 
