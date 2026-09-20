@@ -14,6 +14,23 @@ In ancient Greek city-states, the *agora* was the open public square — the pla
 
 Open [`index.html`](index.html) in any browser — it's a self-contained page (no build step, no install).
 
+## Build status
+
+This repo is the design; the app itself is being built in step with it, phase by phase. Current status:
+
+| Phase | Status | Design screens |
+|---|---|---|
+| 1 — Discovery | ✅ done | 1.1–1.4c (onboarding), 3.1–3.3 (nearby) |
+| 2 — Messaging | ✅ done | 4.1–4.5, 7.2 |
+| 2B — File sharing | ⏳ not started | 8.1–8.7 |
+| 3 — Calling | ⏳ not started | 5.1–5.6, 5.2b, 7.3, 7.4 |
+| 4 — Hybrid mode | ⏳ not started | 6.2, 7.1 |
+| 5 — Polish | ⏳ not started | 6.1, 6.3–6.5 |
+
+- **Discovery** — devices find each other on the LAN via mDNS, with a UDP broadcast fallback for networks that filter it. Verified: peers appear/disappear live as they join and leave.
+- **Messaging** — direct WebSocket between peers (no server in between), messages persisted locally per device, with sent/delivered acknowledgment. Verified: a message sent to a peer that just dropped off the network is held and delivered exactly once, in order, once that peer reappears.
+- Everything below Messaging is designed (see the screens above) but not yet built.
+
 ## What's designed here
 
 | Section | Screens |
