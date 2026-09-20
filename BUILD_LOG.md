@@ -77,9 +77,32 @@ Ran two instances on the same machine (`Alice` on port 8001, `Bob` on port 8002)
 
 ---
 
-## Phase 2 — Messaging — ⏳ NOT STARTED
+## Phase 2 — Messaging — ✅ DONE (single-machine verified)
 
-Per spec: WebSocket server per device, connect to peer's advertised IP:port, send/receive with delivery ack + ordering, persist to SQLite.
+**Spec requirements:** WebSocket server per device, connect to peer's advertised IP:port, send/receive with delivery ack + ordering, persist to SQLite, survive a peer disconnecting/reconnecting mid-conversation without losing message order.
+
+**What was built:**
+- [backend/app/storage.py](backend/app/storage.py) — `MessageStore`: one SQLite file per device (no shared/central DB), a `messages` table (msg_id, peer_id, direction, body, status, ts). Each call opens a short-lived connection via `asyncio.to_thread` rather than sharing one connection across coroutines/threads.
+- [backend/app/messaging.py](backend/app/messaging.py) — `MessagingService`:
+  - Runs a `websockets` server on the same port discovery already advertises for this device.
+  - Sending opens (or reuses) one persistent outbound connection per peer — ordering comes for free from using a single connection, not from any sequence-number scheme.
+  - Wire protocol: `hello` (identifies the peer_id on a fresh connection) → `chat` (msg_id, body, ts) → `ack` (msg_id). A message starts `pending`, flips to `sent` once written to the socket, and to `delivered` once the ack round-trips back.
+  - A background loop every 2s re-attempts delivery of anything still `pending`/`sent` for peers currently visible in the discovery registry — this is the same mechanism for "peer was briefly offline" and for "resume after a call paused a transfer" later in Phase 2B.
+- [backend/app/cli_chat.py](backend/app/cli_chat.py) — interactive CLI test: `peers`, `<name> <message>`, `history <name>`, `quit`. Added a `--peer-id` override (default: random per run) specifically to let a test simulate the *same device* restarting — not otherwise needed, and worth remembering this means peer identity isn't yet persisted across real restarts (see Known limitations).
+
+**Errors hit and fixed during this phase:**
+1. **`zeroconf._exceptions.EventLoopBlocked` on startup.** `discovery.start()` calls zeroconf's synchronous `register_service`, which detects the *already-running* asyncio event loop in the calling thread (cli_chat.py runs everything under `asyncio.run()`, unlike Phase 1's plain-synchronous `cli_test.py`) and tries to schedule its own internal coroutine on that same loop — but the loop is busy executing our synchronous call and can never get free to run it, so it deadlocks and times out. *Fix*: run `discovery.start()` via `await asyncio.to_thread(discovery.start)` so zeroconf sees no ambient loop in its own thread and falls back to its normal dedicated background loop. Root cause was purely "discovery was written and tested as a synchronous script in Phase 1, then reused inside an asyncio app in Phase 2" — worth remembering if discovery gets embedded into the eventual FastAPI service too.
+2. **Duplicate message delivery** — Bob received "hi from alice" four times in the first test run. Root cause: the outbound connection used for *sending* had nothing reading frames *off* it, so Bob's `ack` reply was sent but never consumed by Alice. Her message's status stayed `sent` forever, so the pending-flush loop (which resends anything not yet `delivered`) kept resending it every 2 seconds. *Fix*: spawn a small reader task on every outbound connection as soon as it's opened, whose only job is to catch `ack` frames and flip status to `delivered`. This is the kind of bug that only shows up with two real processes exchanging real acks — worth remembering discovery's single-machine test didn't need this because it never had a return-path protocol.
+
+**Tests performed (all on one machine, two/three processes):**
+- ✅ Two-way discovery + send: Alice → Bob delivered, status flow `pending → sent → delivered` confirmed via `history`, Bob's `received` copy stored once.
+- ✅ **Hard-drop mid-conversation**: killed Bob (`kill -9`, no graceful mDNS unregister — deliberately, to simulate a real dropped device rather than a clean quit) *while a send to him was about to happen*. Message correctly stayed queued (his registry entry only goes stale after the 10s TTL from Phase 1), then a second Bob process was started with the same `--peer-id` (simulating the same device reconnecting) — the pending-flush loop picked him back up and delivered the message exactly once, no duplicates, status ended at `delivered`.
+
+**Known limitations / not yet done in Phase 2:**
+- Only tested on one machine, same caveat as Phase 1 — multi-device WiFi testing still pending for both phases together.
+- Peer identity (`peer_id`) is not yet persisted across a real app restart — Phase 1/2 both generate a fresh random UUID per process unless a test forces `--peer-id`. A real device will need to persist this locally (e.g. a small config file) so a restart doesn't look like a brand-new peer to everyone else's message history.
+- No message encryption yet — spec calls for treating LAN traffic as untrusted; that's still open (noted already in the spec, not forgotten, just not in scope for getting the transport itself correct first).
+- If both sides try to message each other for the first time at the exact same instant, each opens its own outbound connection rather than sharing one — works fine (each direction is independently ordered) but means a peer pair can end up with two live connections instead of one. Not a correctness bug, just an inefficiency; not worth solving before Phase 3, where the same question resurfaces properly as call collision.
 
 **Matching design screens:** `4.1` Chat list · `4.1b` Chats empty · `4.2` Chat 1:1 · `4.3` Group chat · `4.4` New chat · `4.5` Chat info · `7.2` Router isolation (the "can't reach this peer" state belongs here since it's a messaging-connection failure, not a discovery one).
 
