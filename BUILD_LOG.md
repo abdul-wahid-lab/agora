@@ -18,6 +18,15 @@ and Phase 3 (calling) doesn't start until 1 and 2 are solid on real devices.
 | Backend deps | fastapi, uvicorn[standard], zeroconf, websockets — see `backend/requirements.txt` |
 | Git | Initialized fresh (`git init`) — repo had no prior history |
 
+## Design Assets
+
+`D:\Agora\ui prompt\` now holds a full visual design, generated from the [Suggested Build Prompt](ui%20prompt/agora-ui-pages-prompt.md) (§8) and the [File Sharing design prompt](ui%20prompt/agora-ui-pages-prompt.md) (§9):
+
+- **`Agora.dc.html`** (+ `support.js`) — a single canvas containing **37 fully designed screens**, iPhone-frame mockups, covering every section of the UI spec: onboarding, nearby/discovery, chats, calls, settings, system/edge states, and file sharing.
+- Design direction actually followed: warm cream/off-white ground (`#fbf7f2` / `#efe7dd`), terracotta/amber accent (`#e2703a`) — matches the "hearth, not cloud-enterprise" brief. Type pairing: **Instrument Serif** for display headings, **Hanken Grotesk** for UI/body, **IBM Plex Mono** for technical labels/metadata.
+- Notably went beyond the prompt in a good way on **8.5 Security interstitial** (the APK/install-warning screen): dark high-contrast treatment, sender trust context ("known 14 days, 62 messages"), sha256 shown, two required consent checkboxes, and a 3-second delay before "Install anyway" unlocks, with "Keep it closed" as the visually dominant default action. This is a stronger safety design than the prompt asked for — worth preserving as-is when this gets built.
+- Not yet wired to any real framework/frontend — it's a static design reference (per-screen `data-screen-label` attributes make each one greppable), not implementation. Frontend framework choice (React/Next.js vs Flutter, still open) determines how these get turned into real screens.
+
 Setup steps taken:
 1. `git init` in `D:\Agora`.
 2. Created `backend/app/` package.
@@ -64,11 +73,15 @@ Ran two instances on the same machine (`Alice` on port 8001, `Bob` on port 8002)
 - No explicit "mDNS is blocked" *detection* logic yet — right now both paths just always run in parallel and whichever works, works. A deliberate detect-and-report path (spec's client/AP-isolation edge case) is deferred to Phase 4/5 polish or before, whenever it's tackled.
 - No graceful `remove_service` UI signal tested (only tested via hard-kill/TTL expiry, not a clean shutdown that unregisters the mDNS service).
 
+**Matching design screens (ready, not yet built):** `1.1` Splash · `1.2` Permissions · `1.3` Profile setup · `1.4a/b/c` Network check (found / empty / blocked) · `3.1` Nearby peers · `3.1b` Nearby empty · `3.2` Peer quick actions · `3.3` Troubleshooting. This whole set only needs discovery data (already live) — no messaging or calling required — so it's the first UI slice that could be wired up.
+
 ---
 
 ## Phase 2 — Messaging — ⏳ NOT STARTED
 
 Per spec: WebSocket server per device, connect to peer's advertised IP:port, send/receive with delivery ack + ordering, persist to SQLite.
+
+**Matching design screens:** `4.1` Chat list · `4.1b` Chats empty · `4.2` Chat 1:1 · `4.3` Group chat · `4.4` New chat · `4.5` Chat info · `7.2` Router isolation (the "can't reach this peer" state belongs here since it's a messaging-connection failure, not a discovery one).
 
 ## Phase 2B — File Sharing — ⏳ NOT STARTED (added 2026-09-21)
 
@@ -82,9 +95,27 @@ Per spec: WebSocket server per device, connect to peer's advertised IP:port, sen
 
 **Sequencing:** placed after Phase 2 (messaging) since it reuses the WebSocket connection for the send/accept handshake, and before Phase 3 (calling) is considered done, since the bandwidth-contention edge case above only matters once both exist. Not started — no code written yet.
 
+**Matching design screens:** `8.1` Send confirm · `8.2` File bubbles · `8.3` Transfer states · `8.4` Received file actions · `8.5` Security interstitial (the APK-install warning — see Design Assets note above, this one's especially strong) · `8.6` Shared files · `8.7` Storage settings.
+
 ## Phase 3 — Calling — ⏳ NOT STARTED
+
+Per spec: WebRTC peer connections, SDP/ICE signaled over the existing WebSocket, no STUN/TURN, explicit call states, collision tie-breaking, clean handling of a peer dropping mid-call. Don't start until Phase 1 + 2 are verified on two real devices, not just this one machine (spec's own §6 rule).
+
+**Matching design screens:** `5.1` Outgoing call · `5.2` Incoming call · `5.2b` Call collision · `5.3` Active audio call · `5.4` Active video call · `5.5` Call ended · `5.6` Call history · `7.3` Peer left mid-call · `7.4` Calls empty.
+
 ## Phase 4 — Hybrid Online/Offline Mode — ⏳ NOT STARTED
+
+Per spec: connectivity watchdog (real internet vs. just Wi-Fi association), a transport abstraction so the rest of the app doesn't care whether a peer is reached via LAN or an optional relay, automatic fallback with no user action required.
+
+**Matching design screens:** `6.2` Network settings (mode indicator + opt-in sync toggle) · `7.1` Connectivity banners.
+
 ## Phase 5 — Polish — ⏳ NOT STARTED
+
+Per spec: group chat/multi-peer, encryption hardening across all transports, packaging into a real installable app.
+
+**Matching design screens:** `6.1` Settings home · `6.3` Privacy · `6.4` Notifications · `6.5` About. (Group chat itself is design-covered already under Phase 2's `4.3`/`4.4`, since those don't depend on anything Phase 5-specific.)
+
+Every one of the 37 screens in `Agora.dc.html` now has a phase assignment above — nothing in the design is orphaned, and nothing in the phase plan is missing a visual target.
 
 ---
 
