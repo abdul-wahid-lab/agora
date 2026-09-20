@@ -6,6 +6,10 @@ This repository holds the **visual design** for Agora: a single interactive canv
 
 ![Agora design preview](preview.webp)
 
+## Why "Agora"
+
+In ancient Greek city-states, the *agora* was the open public square — the place people physically gathered to talk and trade, with no ruler or central authority presiding over it. That's the shape of this app: no server sitting in the middle of your conversation, no account system, no company routing your messages through its own infrastructure. Just people finding each other in the same local space — here, the same WiFi network — and talking directly, the way the agora itself worked: a local gathering place, not a cloud platform.
+
 ## View it
 
 Open [`index.html`](index.html) in any browser — it's a self-contained page (no build step, no install).
