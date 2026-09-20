@@ -1,0 +1,7 @@
+backend/agora/
+__pycache__/
+*.pyc
+*.log
+*.db
+node_modules/
+.env
