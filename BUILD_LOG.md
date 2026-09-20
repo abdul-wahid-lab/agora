@@ -5,6 +5,17 @@ actually been verified working. Spec lives in [lan-chat-app-spec.md](lan-chat-ap
 Following the spec's own instruction: build order is Phase 1 → 2 → 3 → 4 → 5,
 and Phase 3 (calling) doesn't start until 1 and 2 are solid on real devices.
 
+## Status at a glance
+
+| Phase | Status | Design screens |
+|---|---|---|
+| 1 — Discovery | ✅ done (single-machine verified) | 1.1–1.4c (onboarding), 3.1–3.3 (nearby) |
+| 2 — Messaging | ✅ done (single-machine verified) | 4.1–4.5, 7.2 |
+| 2B — File sharing | ⏳ not started | 8.1–8.7 |
+| 3 — Calling | ⏳ not started | 5.1–5.6, 5.2b, 7.3, 7.4 |
+| 4 — Hybrid mode | ⏳ not started | 6.2, 7.1 |
+| 5 — Polish | ⏳ not started | 6.1, 6.3–6.5 |
+
 ---
 
 ## Environment / Setup
