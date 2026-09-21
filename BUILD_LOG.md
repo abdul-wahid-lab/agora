@@ -12,8 +12,8 @@ and Phase 3 (calling) doesn't start until 1 and 2 are solid on real devices.
 | 1 — Discovery | ✅ done (single-machine verified) | 1.1–1.4c (onboarding), 3.1–3.3 (nearby) |
 | 2 — Messaging | ✅ done (single-machine verified) | 4.1–4.5, 7.2 |
 | 2B — File sharing | ✅ done (single-machine verified) | 8.1–8.7 |
-| 3 — Calling | ⏳ not started | 5.1–5.6, 5.2b, 7.3, 7.4 |
-| 4 — Hybrid mode | ⏳ not started | 6.2, 7.1 |
+| 3 — Calling | 🔶 in progress | 5.1–5.6, 5.2b, 7.3, 7.4 |
+| 4 — Hybrid mode | ❌ removed (2026-09-21) — no hybrid mode, ever; LAN/WiFi-only by design | ~~6.2, 7.1~~ |
 | 5 — Polish | ⏳ not started | 6.1, 6.3–6.5 |
 
 ## Desktop app build-out
@@ -305,11 +305,9 @@ Per spec: WebRTC peer connections, SDP/ICE signaled over the existing WebSocket,
 
 **Matching design screens:** `5.1` Outgoing call · `5.2` Incoming call · `5.2b` Call collision · `5.3` Active audio call · `5.4` Active video call · `5.5` Call ended · `5.6` Call history · `7.3` Peer left mid-call · `7.4` Calls empty.
 
-## Phase 4 — Hybrid Online/Offline Mode — ⏳ NOT STARTED
+## Phase 4 — REMOVED (2026-09-21)
 
-Per spec: connectivity watchdog (real internet vs. just Wi-Fi association), a transport abstraction so the rest of the app doesn't care whether a peer is reached via LAN or an optional relay, automatic fallback with no user action required.
-
-**Matching design screens:** `6.2` Network settings (mode indicator + opt-in sync toggle) · `7.1` Connectivity banners.
+**Decision: no hybrid online/offline mode, ever.** Whether the internet happens to be reachable is irrelevant and is never checked — Agora works purely on LAN/WiFi presence, full stop. No connectivity watchdog, no cloud relay, no "sync when internet returns," no mode indicator to build. This entire phase is deleted, not deferred — see the spec's own Phase 4 section for the reasoning. `6.2`/`7.1`'s network-mode-toggle and connectivity-banner designs are retired along with it (single-mode apps don't need a mode indicator).
 
 ## Phase 5 — Polish — ⏳ NOT STARTED
 

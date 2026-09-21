@@ -48,7 +48,7 @@ flowchart TB
     Core_B -.->|"if online"| CloudSync
 ```
 
-**Key principle:** every device runs the *same* local service. There is no client/server split — each peer is both. Discovery finds peers, WebSocket handles text + signaling, WebRTC handles media, and the cloud layer is a pure optional upgrade, never a dependency.
+**Key principle:** every device runs the *same* local service. There is no client/server split — each peer is both. Discovery finds peers, WebSocket handles text + signaling, WebRTC handles media. **Update (2026-09-21):** there is no cloud layer at all, optional or otherwise — see Phase 4's descoping note below. The app works whenever WiFi/LAN is present; whether the internet is also up is simply never checked.
 
 ---
 
@@ -60,9 +60,9 @@ flowchart TB
 | Local transport | Reliable messaging + signaling between peers | WebSocket server per device (FastAPI `websockets` or Node `ws`) |
 | File transfer | Send/receive files of any type (docs, images, APKs, game files/ROMs, archives) between peers | Chunked binary transfer over a dedicated TCP connection per transfer (not the chat WebSocket — see Phase 2B), with resume support |
 | Calling | Audio/video between peers with no STUN/TURN needed (same subnet, no NAT) | WebRTC, signaling routed over the local WebSocket instead of a cloud signaling server |
-| Connectivity mode manager | Detect internet up/down, switch behavior | Small watchdog pinging a known host + fallback to LAN-only |
 | UI | Chat + call interface | Next.js/React (browser) or Flutter (native, avoids browser WebRTC/mDNS permission quirks) |
-| Optional cloud layer | Sync history / cross-network presence when online | Any backend you already know (FastAPI + Postgres) |
+
+~~Connectivity mode manager~~ and ~~Optional cloud layer~~ — **removed (2026-09-21).** No internet-up/down watchdog, no cloud sync, no dual-mode behavior anywhere in the app. LAN/WiFi present = it works; LAN/WiFi absent = it doesn't, and that's the only state that matters.
 
 ---
 
@@ -94,11 +94,8 @@ flowchart TB
 - Handle call states: ringing, accepted, declined, ended, peer dropped mid-call.
 - Add basic reconnection logic if WiFi hiccups.
 
-### Phase 4 — Hybrid Online/Offline Mode (1–2 weeks)
-- Build a connectivity watchdog: periodically check for real internet (not just WiFi association — ping a known external host).
-- Design a connection abstraction so the rest of the app doesn't care whether a peer is reached via LAN or via the optional cloud relay.
-- When internet drops, fall back to LAN-only automatically and notify the user.
-- When internet returns, optionally sync missed messages via the cloud layer.
+### Phase 4 — descoped (2026-09-21)
+**Decision: no hybrid online/offline mode.** Agora only ever needs a local WiFi/LAN connection to work — whether the internet happens to be available or not is irrelevant, there is no cloud relay, no connectivity watchdog, no "sync when internet returns" logic. If WiFi is present, the app works, full stop. This removes an entire mode (and the connection-abstraction layer that would have hidden it) from the build. Nothing here needs building; there's nothing to fall back *from*.
 
 ### Phase 5 — Polish
 - Handle multiple peers/group chat.
@@ -124,8 +121,10 @@ flowchart TB
 Build a LAN-first chat and calling application with the following requirements:
 
 CORE REQUIREMENT: The app must work fully offline on a local WiFi network with zero
-internet dependency for discovery, messaging, or calling. Internet, if available, is
-only used as an optional upgrade layer (cross-network sync), never a requirement.
+internet dependency for discovery, messaging, or calling. There is no hybrid/online
+mode at all (descoped 2026-09-21) — whether the internet happens to be up is never
+checked and never changes app behavior. LAN/WiFi present is the only condition that
+matters.
 
 TECH STACK:
 - Local service on each device: FastAPI (Python) with WebSocket support
@@ -171,15 +170,9 @@ PHASE 3 - CALLING:
   other side's outgoing call is cancelled)
 - Handle a peer dropping off WiFi mid-call gracefully (detect and end call cleanly)
 
-PHASE 4 - HYBRID MODE:
-- Implement a connectivity watchdog that distinguishes "connected to WiFi" from
-  "has real internet access" (e.g. periodic HTTP HEAD request to a known reliable host,
-  with a short timeout, not just checking the network interface state)
-- Design the peer connection logic behind an abstraction so the rest of the app doesn't
-  need to know whether a peer is reached via direct LAN connection or (optionally,
-  if you implement it) a cloud relay for cross-network use
-- When internet is lost, the app must fall back to LAN-only mode automatically with
-  no user action required, and should surface a subtle UI indicator of current mode
+PHASE 4 - REMOVED (2026-09-21):
+- No hybrid mode. No connectivity watchdog, no internet-vs-WiFi distinction, no cloud
+  relay, no mode indicator. There is exactly one mode: LAN/WiFi present or not.
 
 CONSTRAINTS AND EDGE CASES TO HANDLE EXPLICITLY:
 - Detect and clearly report when the router has client/AP isolation enabled (peers
