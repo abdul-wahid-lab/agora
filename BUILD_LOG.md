@@ -11,14 +11,14 @@ and Phase 3 (calling) doesn't start until 1 and 2 are solid on real devices.
 |---|---|---|
 | 1 — Discovery | ✅ done (single-machine verified) | 1.1–1.4c (onboarding), 3.1–3.3 (nearby) |
 | 2 — Messaging | ✅ done (single-machine verified) | 4.1–4.5, 7.2 |
-| 2B — File sharing | ⏳ not started | 8.1–8.7 |
+| 2B — File sharing | ✅ done (single-machine verified) | 8.1–8.7 |
 | 3 — Calling | ⏳ not started | 5.1–5.6, 5.2b, 7.3, 7.4 |
 | 4 — Hybrid mode | ⏳ not started | 6.2, 7.1 |
 | 5 — Polish | ⏳ not started | 6.1, 6.3–6.5 |
 
 ## Test it yourself
 
-There's no UI wired up yet — Phases 1 and 2 are CLI-only for now (`app.cli_chat`), by design, per the spec's own "prove the transport before touching UI" instruction.
+There's no UI wired up yet — Phases 1, 2, and 2B are CLI-only for now (`app.cli_chat`), by design, per the spec's own "prove the transport before touching UI" instruction.
 
 **Quick test, one machine, two terminals.** In both, `cd D:\Agora\backend` first.
 
@@ -31,6 +31,8 @@ Terminal 2:
 .\agora\Scripts\python.exe -m app.cli_chat --name Bob --port 8002
 ```
 Wait a couple seconds, then in either one: `peers` (the other should show up), then `Bob hey can you see this` (or `Alice ...` from Bob's side) to send a message, then `history Bob` to confirm it went `pending → sent → delivered`. Kill one with Ctrl+C mid-conversation and watch the other's `peers` list drop it after ~10s (TTL/leave detection).
+
+**File sharing:** `send Bob C:\path\to\some\file` from one side. The *other* side will get an incoming-offer prompt printed automatically (with a loud warning if it's an `.apk`/`.exe`/etc.) — type `accept <the short id shown>` or `decline <id>`. Check `files Bob` on either side afterward to see status move through `offered → accepted/declined → transferring → completed`. Note: reacting to a freshly-printed transfer_id from a *second* terminal you're driving via script/pipe rather than typing by hand hits a real Windows/MSYS stdin quirk (see Phase 2B notes below) — typing it yourself in a normal terminal works fine; the automated regression test (`python -m app._test_filetransfer`) is the reliable way to exercise this end-to-end without a human at the keyboard.
 
 **Real test, two actual devices on the same WiFi** — the one that actually matters, since the spec explicitly warns single-machine testing can hide bugs that only show up across real network interfaces:
 
@@ -142,7 +144,7 @@ Ran two instances on the same machine (`Alice` on port 8001, `Bob` on port 8002)
 
 **Matching design screens:** `4.1` Chat list · `4.1b` Chats empty · `4.2` Chat 1:1 · `4.3` Group chat · `4.4` New chat · `4.5` Chat info · `7.2` Router isolation (the "can't reach this peer" state belongs here since it's a messaging-connection failure, not a discovery one).
 
-## Phase 2B — File Sharing — ⏳ NOT STARTED (added 2026-09-21)
+## Phase 2B — File Sharing — ✅ DONE (single-machine verified)
 
 **Not originally in scope.** The only prior mention was a throwaway "attachment icon (optional file share over LAN)" bullet in `ui prompt/agora-ui-pages-prompt.md`, with no protocol, storage design, or safety handling behind it — not a real feature. Added properly to both [lan-chat-app-spec.md](lan-chat-app-spec.md) and [ui prompt/agora-ui-pages-prompt.md](ui%20prompt/agora-ui-pages-prompt.md) at the user's request, since file sharing (arbitrary types — docs, images, **APKs, game files/ROMs**, archives) will be built alongside text messaging.
 
@@ -152,7 +154,38 @@ Ran two instances on the same machine (`Alice` on port 8001, `Bob` on port 8002)
 - Needs resume-after-drop, not restart-from-zero, given WiFi hiccups are already an accepted reality for calls in this project.
 - Competes for bandwidth with an active call on the same LAN — spec now calls for pausing/throttling large transfers while a call is in progress.
 
-**Sequencing:** placed after Phase 2 (messaging) since it reuses the WebSocket connection for the send/accept handshake, and before Phase 3 (calling) is considered done, since the bandwidth-contention edge case above only matters once both exist. Not started — no code written yet.
+**Sequencing:** placed after Phase 2 (messaging) since it reuses the WebSocket connection for the send/accept handshake, and before Phase 3 (calling) is considered done, since the bandwidth-contention edge case above only matters once both exist.
+
+**What was built:**
+- [backend/app/storage.py](backend/app/storage.py) — added a `files` table (transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts) alongside the existing `messages` table.
+- [backend/app/messaging.py](backend/app/messaging.py) — added a generic `on_control` hook so other services can ride the same WebSocket for their own message types without messaging.py knowing anything about them, plus a `send_control()` method. This is how file-transfer control messages piggyback on the existing chat connection per the spec, with zero coupling between the two modules.
+- [backend/app/filetransfer.py](backend/app/filetransfer.py) — `FileTransferService`:
+  - Handshake over the existing WebSocket: `file_offer` (filename, size, sha256, is_executable) → `file_offer_response` (accept, TCP port, resume_at) → `file_complete`/`file_failed`.
+  - Bytes move over a **separate raw TCP connection** opened fresh per transfer, streamed straight to a `.part` file on disk in 256KB chunks — never buffered in memory, so this scales to the multi-GB game-file/ROM case the spec calls out.
+  - Receiver computes its own sha256 of the completed `.part` file and compares to what the *offer* claimed — it never trusts the sender's word after the fact, only what it can verify itself.
+  - Resume: the receiver's `.part` file size on disk *is* the resume point (not an in-memory counter), so a `resend()` after a drop picks up from the real last-flushed byte, not wherever the process's memory thought it was.
+  - Executable/installable extensions (`.apk .exe .msi .bat .cmd .com .sh .jar .appimage .ps1`) are flagged `is_executable` in the offer itself, so the receiving side can show a distinctly stronger warning *before* the accept decision is even made — matches the design's `8.5 Security interstitial`.
+  - Nothing auto-accepts or auto-saves anywhere in this module — `accept()` only ever runs in response to an explicit call from the UI/CLI layer.
+- [backend/app/cli_chat.py](backend/app/cli_chat.py) — added `send <peer> <path>`, `files <peer>`, `accept/decline/resend <transfer_id prefix>`. Incoming offers print immediately (with the executable warning inline) the same way incoming chat messages do.
+- [backend/app/_test_filetransfer.py](backend/app/_test_filetransfer.py) — automated integration test (see below) driving two full stacks in one process over real sockets.
+
+**Errors hit and fixed during this phase:**
+1. **Interactive CLI testing hit a Windows/MSYS platform wall, not a code bug.** Verifying `accept <id>` requires reacting to a transfer_id that's only known once the offer actually arrives — mid-session, not scriptable in advance. Tried feeding a running background process's stdin through a named pipe (`mkfifo`) from later shell commands; first attempt deadlocked outright (opened the pipe's write end before anything held the read end open — classic FIFO open-order deadlock), and after fixing the ordering, the venv's native `python.exe` crashed immediately with `RuntimeError: lost sys.stdin` — MSYS/Cygwin-emulated FIFOs apparently don't hand native Win32 CRT processes a stdin handle they can actually read. *Fix*: stopped fighting the terminal and wrote [_test_filetransfer.py](backend/app/_test_filetransfer.py), an automated asyncio test that drives two `FileTransferService` instances directly in one process over real localhost sockets — no interactive stdin involved at all. More deterministic than the manual approach anyway, and it's a real regression test that stays in the repo rather than a one-off manual session. (The earlier CLI offer/warning flow was still confirmed manually first — see Tests performed.)
+2. No bugs found in the actual transfer logic on the first fully-working test run — the offer/accept/stream/hash-verify/save pipeline worked correctly the first time the stdin issue was worked around. The resume logic (test 2 below) also passed on the first attempt.
+
+**Tests performed:**
+- ✅ **Executable warning UI path** (manual, interactive CLI, two real background processes): sent a `.jpg` and a fake `.apk` from Alice to Bob. The `.jpg` offer printed normally; the `.apk` offer printed with `!! THIS IS AN INSTALLABLE/EXECUTABLE FILE - only accept if you trust the sender !!` inline, and `files <peer>` correctly tagged it `[EXECUTABLE]` in the history listing.
+- ✅ **Happy path** (automated, `_test_filetransfer.py`): offer → accept → 500KB streamed over a dedicated TCP connection → receiver's independently-computed sha256 matches → file saved to `<downloads>/<sender_peer_id>/<filename>` → sender's own record also reads `completed`.
+- ✅ **Resume** (automated): seeded a receiver-side `.part` file with exactly the first half of the real file's bytes (simulating "dropped mid-transfer last time"), called `resend()`, and confirmed via an instrumented spy that the sender started streaming from **exactly** byte 250,017 of 500,034 — not from zero — and the final reassembled file's hash matched the original exactly.
+- ✅ **Decline**: receiver declining leaves the sender's record as `declined`, no bytes ever move, no hang.
+- ✅ **Hash mismatch is caught, not silently accepted**: seeded an offer where the claimed hash doesn't match the real bytes (simulating corruption/tampering in transit) — receiver's independent verification catches it, deletes the bad `.part` file, reports `file_failed` back to the sender, and never lets a corrupted file reach the "completed" state or the real downloads folder.
+
+**Known limitations / not yet done in Phase 2B:**
+- Only tested on one machine/process — same multi-device caveat as Phases 1 and 2.
+- No bandwidth-sharing with an active call yet — can't exist meaningfully until Phase 3 (calling) does. Spec still calls for pausing/throttling a large transfer while a call is active; deferred until there's a call to contend with.
+- `resend()` only works within the same process lifetime — outgoing file paths are remembered in memory (`_outgoing_paths`), not persisted, so a sender-side restart loses the ability to resend an in-flight transfer (mirrors the peer-identity-not-persisted limitation already noted in Phase 2).
+- No progress-percentage UI in the CLI (the design's `8.3 Transfer states` calls for live %/speed/ETA) — the backend calls `on_progress` per chunk already, this is purely a CLI-polish gap deferred until there's a real UI to show it in.
+- A single-byte corruption anywhere in a multi-GB file currently means re-transferring the whole thing on retry (whole-file hash, no per-chunk checksums) — acceptable for now, worth revisiting if large-file transfers turn out to be flaky in practice.
 
 **Matching design screens:** `8.1` Send confirm · `8.2` File bubbles · `8.3` Transfer states · `8.4` Received file actions · `8.5` Security interstitial (the APK-install warning — see Design Assets note above, this one's especially strong) · `8.6` Shared files · `8.7` Storage settings.
 

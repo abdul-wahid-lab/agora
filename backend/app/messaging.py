@@ -42,10 +42,20 @@ class IncomingMessage:
 
 
 class MessagingService:
-    def __init__(self, discovery: PeerDiscovery, store: MessageStore, on_message: Optional[Callable[[IncomingMessage], None]] = None):
+    def __init__(
+        self,
+        discovery: PeerDiscovery,
+        store: MessageStore,
+        on_message: Optional[Callable[[IncomingMessage], None]] = None,
+        on_control: Optional[Callable[[str, str, dict], "asyncio.Future"]] = None,
+    ):
         self.discovery = discovery
         self.store = store
         self.on_message = on_message
+        # Lets other services (file transfer) ride this same connection for
+        # their own message types without messaging.py needing to know
+        # anything about them. Called as on_control(msg_type, peer_id, msg).
+        self.on_control = on_control
 
         self.peer_id = discovery.peer_id
         self.device_name = discovery.device_name
@@ -89,6 +99,8 @@ class MessagingService:
                     await ws.send(json.dumps({"type": "ack", "msg_id": msg["msg_id"]}))
                 elif mtype == "ack":
                     await self.store.update_status(msg["msg_id"], "delivered")
+                elif remote_peer_id and self.on_control:
+                    await self.on_control(mtype, remote_peer_id, msg)
         except websockets.ConnectionClosed:
             pass
 
@@ -125,8 +137,11 @@ class MessagingService:
         try:
             async for raw in conn:
                 msg = json.loads(raw)
-                if msg.get("type") == "ack":
+                mtype = msg.get("type")
+                if mtype == "ack":
                     await self.store.update_status(msg["msg_id"], "delivered")
+                elif self.on_control:
+                    await self.on_control(mtype, peer_id, msg)
         except websockets.ConnectionClosed:
             pass
         finally:
@@ -135,6 +150,19 @@ class MessagingService:
     async def _drop_connection(self, peer_id: str) -> None:
         async with self._lock:
             self._out_conns.pop(peer_id, None)
+
+    async def send_control(self, peer_id: str, message: dict) -> bool:
+        """Send an arbitrary JSON control message to a peer over the same
+        connection chat uses - for file-transfer offers/responses/etc."""
+        try:
+            conn = await self._get_connection(peer_id)
+            if conn is None:
+                return False
+            await conn.send(json.dumps(message))
+            return True
+        except (websockets.ConnectionClosed, OSError):
+            await self._drop_connection(peer_id)
+            return False
 
     async def send(self, peer_id: str, body: str) -> str:
         """Queue+attempt a send. Returns the generated msg_id immediately."""
