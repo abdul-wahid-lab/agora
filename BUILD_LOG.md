@@ -56,8 +56,11 @@ Decided 2026-09-21: ship this as a real installable Windows app (like Discord/Sl
 
 **Test performed:** ran two backend instances (`AGORA_NAME=Alice`/`Bob`, ports 8001/8002, APIs on 5001/5002) plus the Vite dev server, pointed the frontend's `.env` at Alice's API (`http://127.0.0.1:5001`), and screenshotted the running page. Confirmed end-to-end, not simulated: the page showed "you are Alice · peer_id 200cbb31" (live from `GET /me`) and a real "Bob · 192.168.1.103:8002 · via udp" row (live from `GET /peers`), with the status bar correctly reading "LAN-only · 1 peer".
 
+**Onboarding — added right after:** [frontend/src/components/Onboarding.jsx](frontend/src/components/Onboarding.jsx) — Splash → Permissions (informational only, matching the design's plain-language reasons for each) → Profile setup, gated behind `localStorage["agora.onboarded"]` so it only shows once per browser. Verified all three steps render correctly via screenshots, including the profile-setup "Start looking around" button's disabled state until a name is typed.
+
 **Known limitations / not yet done:**
-- Onboarding (splash/permissions/profile-setup) isn't built yet — the app currently opens straight to Nearby. Permission prompts (mic/camera/notifications) don't mean much in a plain browser anyway; they'll matter more once Electron (Step 5) can trigger real OS-level prompts.
+- The name typed in Profile setup is stored in `localStorage` only — it does **not** rename the device on the network. `device_name` is fixed at backend startup via an env var; there's no `PUT /me` endpoint yet to actually change it live. This is called out directly in a code comment in `App.jsx` so it isn't mistaken for working.
+- Permission prompts (mic/camera/notifications) are purely informational cards right now — they don't trigger real OS permission dialogs. That only becomes meaningful once Electron (Step 5) can request real OS-level permissions; a browser tab can't request "local network access" as its own permission type at all.
 - Chats, Calls, and Files nav items exist but just show a "coming next" placeholder — Steps 3 and 4.
 - No way yet to rename the device from the UI — `device_name` is fixed at backend startup via an env var, not exposed as an API endpoint. Profile setup will need a small backend addition (e.g. `PUT /me`) before it can be more than cosmetic.
 - Chrome headless was used to verify rendering during development (`--screenshot` against the Vite dev server) — not a permanent test harness, just how this was checked without a person clicking through it manually.

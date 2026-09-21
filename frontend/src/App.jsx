@@ -1,13 +1,27 @@
 import { useEffect, useState } from "react";
 import Sidebar from "./components/Sidebar";
 import NearbyScreen from "./components/NearbyScreen";
+import Onboarding from "./components/Onboarding";
 import { api } from "./api";
 
+const ONBOARDING_KEY = "agora.onboarded";
+
 export default function App() {
+  const [onboarded, setOnboarded] = useState(() => localStorage.getItem(ONBOARDING_KEY) === "1");
   const [active, setActive] = useState("nearby");
   const [me, setMe] = useState(null);
   const [peerCount, setPeerCount] = useState(0);
   const [connected, setConnected] = useState(false);
+
+  function finishOnboarding(chosenName) {
+    // NOTE: this doesn't actually rename the device on the network yet -
+    // device_name is fixed at backend startup via an env var, there's no
+    // PUT /me endpoint. Stored here so the UI has *something* to show;
+    // see BUILD_LOG.md's Step 2 known limitations.
+    localStorage.setItem("agora.chosenName", chosenName);
+    localStorage.setItem(ONBOARDING_KEY, "1");
+    setOnboarded(true);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -29,6 +43,14 @@ export default function App() {
       clearInterval(id);
     };
   }, []);
+
+  if (!onboarded) {
+    return (
+      <div style={{ display: "flex", height: "100vh", background: "var(--ground)" }}>
+        <Onboarding onComplete={finishOnboarding} />
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
