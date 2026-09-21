@@ -1,8 +1,8 @@
-# Agora — UI Design Preview
+# Agora
 
 **Agora** is a LAN-first chat and calling app: find people on the same WiFi network and talk to them instantly — no accounts, no phone numbers, no internet connection required. Discovery, messaging, file sharing, and voice/video calls all work directly, device‑to‑device, over the local network. Internet, when it happens to be available, is treated as a pure bonus (optional cross‑network sync) — never a requirement.
 
-This repository holds the **visual design** for Agora: a single interactive canvas covering all 37 screens of the app, from onboarding through calls, settings, and file sharing.
+This repository holds both the **visual design** — a single interactive canvas covering all 37 screens of the app — and the **working backend** for the phases built so far.
 
 ![Agora design preview](preview.webp)
 
@@ -10,9 +10,24 @@ This repository holds the **visual design** for Agora: a single interactive canv
 
 In ancient Greek city-states, the *agora* was the open public square — the place people physically gathered to talk and trade, with no ruler or central authority presiding over it. That's the shape of this app: no server sitting in the middle of your conversation, no account system, no company routing your messages through its own infrastructure. Just people finding each other in the same local space — here, the same WiFi network — and talking directly, the way the agora itself worked: a local gathering place, not a cloud platform.
 
-## View it
+## View the design
 
 Open [`index.html`](index.html) in any browser — it's a self-contained page (no build step, no install).
+
+## Run the backend
+
+```bash
+cd backend
+python -m venv venv && venv\Scripts\activate   # or: source venv/bin/activate
+pip install -r requirements.txt
+
+# terminal 1
+python -m app.cli_chat --name Alice --port 8001
+# terminal 2
+python -m app.cli_chat --name Bob --port 8002
+```
+
+Once both are running, type `peers` in either one to see the other appear on the network, then `Bob hey` (or `Alice hey`) to send a message, then `history Bob` to watch it move from `pending` → `sent` → `delivered`. No server, no config — the two processes find and talk to each other directly.
 
 ## Build status
 
