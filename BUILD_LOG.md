@@ -16,6 +16,34 @@ and Phase 3 (calling) doesn't start until 1 and 2 are solid on real devices.
 | 4 — Hybrid mode | ⏳ not started | 6.2, 7.1 |
 | 5 — Polish | ⏳ not started | 6.1, 6.3–6.5 |
 
+## Desktop app build-out
+
+Decided 2026-09-21: ship this as a real installable Windows app (like Discord/Slack/WhatsApp Desktop), not a CLI or a browser tab. Strategy: **Electron shell + React frontend (ported from the existing 37-screen design) + the existing Python backend, spawned automatically by Electron as a background process and talked to over a localhost-only API.** Electron chosen over Tauri specifically for this project — no second toolchain (Rust) on top of Python + Node, and the existing design is already React-based.
+
+| Step | Status |
+|---|---|
+| 1 — Local FastAPI wrapper around the existing backend | ✅ done (single-machine verified) |
+| 2 — Port design to React, wire Nearby/onboarding to live discovery | ⏳ not started |
+| 3 — Wire Chat screens to messaging | ⏳ not started |
+| 4 — Wire file-sharing screens to file transfer | ⏳ not started |
+| 5 — Electron shell, sidecar process spawning, installer packaging | ⏳ not started |
+
+### Step 1 — Local API layer — ✅ DONE
+
+**What was built:** [backend/app/api.py](backend/app/api.py) — a FastAPI app wrapping the already-working `PeerDiscovery`/`MessagingService`/`FileTransferService` classes with no changes to any of them. Important design point: this server binds to **127.0.0.1 only** — it is never reachable from other peers on the LAN, it's purely how this device's own future UI talks to this device's own backend. The actual peer-to-peer traffic still goes out on the separate 0.0.0.0-bound discovery/messaging ports, completely independent of this API's port.
+
+- REST: `GET /me`, `GET /peers`, `POST /messages`, `GET /messages/{peer_id}`, `POST /files/send`, `GET /files/{peer_id}`, `POST /files/{id}/accept|decline|resend`.
+- `WS /events` — pushes `message`, `peer_joined`/`peer_left`, `file_offer`, and `file_status` events live, so the future React UI doesn't have to poll for anything that matters in real time (peer presence is still cheap to poll via `GET /peers` too, but events fire proactively as a bonus).
+- `POST /files/send` and the accept/decline/resend endpoints fire the underlying (slow, waits-for-peer-response) calls as background tasks and return immediately — a REST request can't sit open waiting for a human on the other end to accept a file.
+
+**Tests performed** (two `uvicorn` instances on one machine, real HTTP/WebSocket calls via `curl` and a small websockets test script):
+- ✅ `GET /me` / `GET /peers` — discovery data correctly exposed over HTTP.
+- ✅ `POST /messages` → `GET /messages/{peer_id}` on both sides — same `pending → sent → delivered` flow as the CLI, now driven purely over HTTP.
+- ✅ Full file transfer via the API: `POST /files/send` → offer appeared in the receiver's `GET /files` within ~2s → `POST /files/{id}/accept` → transfer completed → saved file's sha256 matched the original exactly.
+- ✅ `WS /events` — connected a plain websocket client, sent a message from the other side via REST, confirmed the `message` event arrived over the socket in real time.
+
+**Known limitations:** peer-join/leave events are driven by a 1.5s poll of the in-memory registry inside the API process (not push-based from discovery.py itself) — fine for a single UI client, would need a proper pub/sub if this ever needed to support multiple simultaneous local UI connections. `on_event("startup"/"shutdown")` is FastAPI's older lifecycle API (still functional in 0.141, but the newer `lifespan` context-manager style is preferred going forward — left as-is since it works and isn't worth a churn-only change right now).
+
 ## Test it yourself
 
 There's no UI wired up yet — Phases 1, 2, and 2B are CLI-only for now (`app.cli_chat`), by design, per the spec's own "prove the transport before touching UI" instruction.
