@@ -25,6 +25,21 @@ CREATE TABLE IF NOT EXISTS messages (
     ts REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_messages_peer ON messages(peer_id, ts);
+
+CREATE TABLE IF NOT EXISTS files (
+    transfer_id TEXT PRIMARY KEY,
+    peer_id TEXT NOT NULL,
+    direction TEXT NOT NULL,     -- 'sent' or 'received'
+    filename TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    is_executable INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL,        -- 'offered' | 'awaiting_accept' | 'accepted' | 'declined' |
+                                  -- 'transferring' | 'completed' | 'failed'
+    saved_path TEXT,
+    ts REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_files_peer ON files(peer_id, ts);
 """
 
 
@@ -35,6 +50,20 @@ class Message:
     direction: str
     body: str
     status: str
+    ts: float
+
+
+@dataclass
+class FileRecord:
+    transfer_id: str
+    peer_id: str
+    direction: str
+    filename: str
+    size: int
+    sha256: str
+    is_executable: bool
+    status: str
+    saved_path: Optional[str]
     ts: float
 
 
@@ -93,6 +122,66 @@ class MessageStore:
                 (peer_id, limit),
             ).fetchall()
             return [Message(*row) for row in rows]
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def save_file(
+        self,
+        transfer_id: str,
+        peer_id: str,
+        direction: str,
+        filename: str,
+        size: int,
+        sha256: str,
+        is_executable: bool,
+        status: str,
+        saved_path: Optional[str] = None,
+        ts: Optional[float] = None,
+    ) -> None:
+        ts = ts if ts is not None else time.time()
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute(
+                "INSERT OR REPLACE INTO files "
+                "(transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (transfer_id, peer_id, direction, filename, size, sha256, int(is_executable), status, saved_path, ts),
+            )
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def update_file_status(self, transfer_id: str, status: str, saved_path: Optional[str] = None) -> None:
+        def _op(conn: sqlite3.Connection):
+            if saved_path is not None:
+                conn.execute("UPDATE files SET status = ?, saved_path = ? WHERE transfer_id = ?", (status, saved_path, transfer_id))
+            else:
+                conn.execute("UPDATE files SET status = ? WHERE transfer_id = ?", (status, transfer_id))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def get_file(self, transfer_id: str) -> Optional[FileRecord]:
+        def _op(conn: sqlite3.Connection) -> Optional[FileRecord]:
+            row = conn.execute(
+                "SELECT transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts "
+                "FROM files WHERE transfer_id = ?",
+                (transfer_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            return FileRecord(row[0], row[1], row[2], row[3], row[4], row[5], bool(row[6]), row[7], row[8], row[9])
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def list_files(self, peer_id: str, limit: int = 50) -> list[FileRecord]:
+        def _op(conn: sqlite3.Connection) -> list[FileRecord]:
+            rows = conn.execute(
+                "SELECT transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts "
+                "FROM files WHERE peer_id = ? ORDER BY ts ASC LIMIT ?",
+                (peer_id, limit),
+            ).fetchall()
+            return [FileRecord(r[0], r[1], r[2], r[3], r[4], r[5], bool(r[6]), r[7], r[8], r[9]) for r in rows]
 
         return await asyncio.to_thread(self._run, _op)
 

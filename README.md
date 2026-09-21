@@ -29,7 +29,9 @@ python -m app.cli_chat --name Alice --port 8001
 python -m app.cli_chat --name Bob --port 8002
 ```
 
-Once both are running, type `peers` in either one to see the other appear on the network, then `Bob hey` (or `Alice hey`) to send a message, then `history Bob` to watch it move from `pending` → `sent` → `delivered`. No server, no config — the two processes find and talk to each other directly.
+Once both are running, type `peers` in either one to see the other appear on the network, then `Bob hey` (or `Alice hey`) to send a message, then `history Bob` to watch it move from `pending` → `sent` → `delivered`. Try `send Bob <file path>` too — the other side gets a live accept/decline prompt (with a distinct warning if it's an executable), and `files Bob` shows transfer status. No server, no config — the two processes find and talk to each other directly.
+
+There's also a local HTTP/WebSocket API (`app.api`) for driving this programmatically instead of through the CLI — `uvicorn app.api:app --host 127.0.0.1 --port 5001` exposes `GET /peers`, `POST /messages`, `POST /files/send`, and a `WS /events` stream. This is what the eventual desktop UI talks to.
 
 ## Build status
 
@@ -39,14 +41,16 @@ This repo is the design; the app itself is being built in step with it, phase by
 |---|---|---|
 | 1 — Discovery | ✅ done | 1.1–1.4c (onboarding), 3.1–3.3 (nearby) |
 | 2 — Messaging | ✅ done | 4.1–4.5, 7.2 |
-| 2B — File sharing | ⏳ not started | 8.1–8.7 |
+| 2B — File sharing | ✅ done | 8.1–8.7 |
 | 3 — Calling | ⏳ not started | 5.1–5.6, 5.2b, 7.3, 7.4 |
 | 4 — Hybrid mode | ⏳ not started | 6.2, 7.1 |
 | 5 — Polish | ⏳ not started | 6.1, 6.3–6.5 |
 
 - **Discovery** — devices find each other on the LAN via mDNS, with a UDP broadcast fallback for networks that filter it. Verified: peers appear/disappear live as they join and leave.
 - **Messaging** — direct WebSocket between peers (no server in between), messages persisted locally per device, with sent/delivered acknowledgment. Verified: a message sent to a peer that just dropped off the network is held and delivered exactly once, in order, once that peer reappears.
-- Everything below Messaging is designed (see the screens above) but not yet built.
+- **File sharing** — any file type, offer/accept consent before anything moves, a dedicated connection per transfer so large files stream straight to disk, receiver-side hash verification, and resume from the exact byte offset after a drop. Executable/installable files get a distinctly stronger warning.
+- A local API layer (`app.api`, FastAPI) now wraps all of the above for a future UI to call instead of a human typing into the CLI.
+- Everything below File sharing is designed (see the screens above) but not yet built.
 
 ## What's designed here
 
