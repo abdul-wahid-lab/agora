@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Sidebar from "./components/Sidebar";
 import NearbyScreen from "./components/NearbyScreen";
+import ChatsScreen from "./components/ChatsScreen";
 import Onboarding from "./components/Onboarding";
 import { api } from "./api";
 
@@ -58,7 +59,8 @@ export default function App() {
         <Sidebar active={active} onSelect={setActive} />
         <main style={{ flex: 1, display: "flex", minWidth: 0, background: "var(--ground)" }}>
           {active === "nearby" && <NearbyScreen me={me} />}
-          {active !== "nearby" && (
+          {active === "chats" && <ChatsScreen />}
+          {active !== "nearby" && active !== "chats" && (
             <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)" }}>
               <p className="serif" style={{ fontSize: 22 }}>
                 {active[0].toUpperCase() + active.slice(1)} — coming next

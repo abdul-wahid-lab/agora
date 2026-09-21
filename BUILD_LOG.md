@@ -23,8 +23,8 @@ Decided 2026-09-21: ship this as a real installable Windows app (like Discord/Sl
 | Step | Status |
 |---|---|
 | 1 — Local FastAPI wrapper around the existing backend | ✅ done (single-machine verified) |
-| 2 — Port design to React, wire Nearby/onboarding to live discovery | 🔶 in progress — Nearby live, onboarding not started |
-| 3 — Wire Chat screens to messaging | ⏳ not started |
+| 2 — Port design to React, wire Nearby/onboarding to live discovery | ✅ done (single-machine verified) |
+| 3 — Wire Chat screens to messaging | ✅ done (single-machine verified) |
 | 4 — Wire file-sharing screens to file transfer | ⏳ not started |
 | 5 — Electron shell, sidecar process spawning, installer packaging | ⏳ not started |
 
@@ -44,7 +44,7 @@ Decided 2026-09-21: ship this as a real installable Windows app (like Discord/Sl
 
 **Known limitations:** peer-join/leave events are driven by a 1.5s poll of the in-memory registry inside the API process (not push-based from discovery.py itself) — fine for a single UI client, would need a proper pub/sub if this ever needed to support multiple simultaneous local UI connections. `on_event("startup"/"shutdown")` is FastAPI's older lifecycle API (still functional in 0.141, but the newer `lifespan` context-manager style is preferred going forward — left as-is since it works and isn't worth a churn-only change right now).
 
-### Step 2 — React port — 🔶 IN PROGRESS (Nearby live)
+### Step 2 — React port — ✅ DONE (Nearby + onboarding live)
 
 **What was built:** [frontend/](frontend/) — a Vite + React app (plain React for now, not yet wrapped in Electron — that's Step 5).
 
@@ -61,9 +61,31 @@ Decided 2026-09-21: ship this as a real installable Windows app (like Discord/Sl
 **Known limitations / not yet done:**
 - The name typed in Profile setup is stored in `localStorage` only — it does **not** rename the device on the network. `device_name` is fixed at backend startup via an env var; there's no `PUT /me` endpoint yet to actually change it live. This is called out directly in a code comment in `App.jsx` so it isn't mistaken for working.
 - Permission prompts (mic/camera/notifications) are purely informational cards right now — they don't trigger real OS permission dialogs. That only becomes meaningful once Electron (Step 5) can request real OS-level permissions; a browser tab can't request "local network access" as its own permission type at all.
-- Chats, Calls, and Files nav items exist but just show a "coming next" placeholder — Steps 3 and 4.
+- Calls and Files nav items still show a "coming next" placeholder — Files is Step 4; Calls has no backend yet (Phase 3).
 - No way yet to rename the device from the UI — `device_name` is fixed at backend startup via an env var, not exposed as an API endpoint. Profile setup will need a small backend addition (e.g. `PUT /me`) before it can be more than cosmetic.
 - Chrome headless was used to verify rendering during development (`--screenshot` against the Vite dev server) — not a permanent test harness, just how this was checked without a person clicking through it manually.
+
+### Step 3 — Chats screen wired to messaging — ✅ DONE
+
+**What was built:** [frontend/src/components/ChatsScreen.jsx](frontend/src/components/ChatsScreen.jsx) — a two-pane view: a live peer list on the left (same `GET /peers` polling pattern as Nearby) and a conversation pane on the right.
+
+- Selecting a peer loads `GET /messages/{peer_id}` and re-polls it every 2.5s to pick up status transitions (`pending → sent → delivered`).
+- Sending calls `POST /messages` and appends an optimistic bubble immediately (`status: "pending"`) rather than waiting for the next poll — reconciled against the server's copy on the next poll tick; a failed send is marked `status: "failed"` inline instead of silently vanishing.
+- A `WS /events` listener appends `message` events for the currently-open peer in real time, so an incoming message shows up with no poll delay and no reload.
+- Outgoing/incoming bubbles are visually distinct (accent-filled vs. surface+border, matching the design), with a timestamp and a delivery glyph (`…` pending, `✓` sent, `✓✓` delivered/received) on outgoing bubbles only.
+- Pulled the avatar color-hash + initials helpers (previously duplicated inline in `NearbyScreen.jsx`) out into [frontend/src/lib/avatar.js](frontend/src/lib/avatar.js), shared by both screens now that a second screen needs the same avatars.
+
+**Test performed** (two real backend instances, Alice on 5001 / Bob on 5002, Vite dev server, headless Chrome driven over the DevTools protocol so real click/type events could be dispatched into the page — not just `curl` against the API):
+- ✅ Sent a message from Bob → Alice via `curl` before opening the UI; Alice's Chats screen showed real history on load (`pending → sent → delivered`, correct bubble side, correct timestamp).
+- ✅ Typed into the actual message input and clicked the actual **Send** button (via a dispatched native `input` event + `.click()`, not a direct API call) — message appeared instantly as an optimistic bubble, then confirmed delivered.
+- ✅ With the Alice↔Bob conversation open, sent a message from Bob's side via the API — it appeared in Alice's open conversation within ~1s over `WS /events`, no reload, no poll wait.
+- ✅ Empty state ("Pick someone nearby to start chatting") confirmed before any peer is selected.
+
+**Known limitations / not yet done:**
+- No group chats yet — one-to-one only, matching where Phase 2 (messaging backend) currently stands.
+- No message-history pagination — `GET /messages/{peer_id}` defaults to the last 50; fine for now, will matter once conversations get long.
+- No "typing…" indicator or read receipts beyond the existing delivered/received status.
+- Optimistic messages use a client-generated `msg_id` (`pending-<timestamp>`) that's replaced wholesale by the next history poll rather than reconciled in place — cosmetically fine (no duplicate renders observed) but worth revisiting if sends ever need per-message retry UI.
 
 ## Test it yourself
 
