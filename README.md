@@ -6,7 +6,7 @@
 
 This repository holds both the **visual design** — a single interactive canvas covering all 37 screens of the app — and the **working backend** for the phases built so far.
 
-![Agora design preview](preview.webp)
+![Onboarding: splash, permissions, profile setup, and the live nearby-peers view](readme_hero_onboarding.png)
 
 ## Why "Agora"
 
@@ -15,6 +15,14 @@ In ancient Greek city-states, the *agora* was the open public square — the pla
 ## View the design
 
 Open [`index.html`](index.html) in any browser — it's a self-contained page (no build step, no install).
+
+## Desktop app design
+
+The plan is an Electron shell around this same design, talking to the local API (see Build status below) — a full native-feeling window, not a resized phone screen:
+
+![Desktop onboarding: "Talk to who's around you," name/avatar setup, no account](readme_desktop_welcome.png)
+
+![Desktop calls view with a live incoming-call toast, call history, and call-quality stats](readme_desktop_calls.png)
 
 ## Run the backend
 
