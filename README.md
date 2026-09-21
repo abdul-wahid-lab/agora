@@ -4,7 +4,7 @@
 
 **Where this fits:** campuses and classrooms, conferences, airplanes, hospitals during a network outage, disaster/emergency response, remote sites (construction, camps, villages), factories and warehouses, LAN parties, and any privacy-sensitive gathering where a central server is a liability, not a feature.
 
-This repository holds both the **visual design** — a single interactive canvas covering all 37 screens of the app — and the **working backend** for the phases built so far.
+This repository holds the **visual design** — a single interactive canvas covering all 37 screens of the app — the **working backend** for the phases built so far, and a **real React desktop UI** (onboarding, live nearby, and live chat all wired to that backend, not mockups).
 
 ![Onboarding: splash, permissions, profile setup, and the live nearby-peers view](readme_hero_onboarding.png)
 
@@ -39,7 +39,20 @@ python -m app.cli_chat --name Bob --port 8002
 
 Once both are running, type `peers` in either one to see the other appear on the network, then `Bob hey` (or `Alice hey`) to send a message, then `history Bob` to watch it move from `pending` → `sent` → `delivered`. Try `send Bob <file path>` too — the other side gets a live accept/decline prompt (with a distinct warning if it's an executable), and `files Bob` shows transfer status. No server, no config — the two processes find and talk to each other directly.
 
-There's also a local HTTP/WebSocket API (`app.api`) for driving this programmatically instead of through the CLI — `uvicorn app.api:app --host 127.0.0.1 --port 5001` exposes `GET /peers`, `POST /messages`, `POST /files/send`, and a `WS /events` stream. This is what the eventual desktop UI talks to.
+There's also a local HTTP/WebSocket API (`app.api`) for driving this programmatically instead of through the CLI — `uvicorn app.api:app --host 127.0.0.1 --port 5001` exposes `GET /peers`, `POST /messages`, `POST /files/send`, and a `WS /events` stream. This is what the desktop UI below actually talks to.
+
+## Run the desktop UI
+
+A real Vite + React app, not a mockup — it talks to the API above over `127.0.0.1` only, and every screen it renders is live data.
+
+```bash
+cd frontend
+npm install
+echo VITE_API_BASE=http://127.0.0.1:5001 > .env
+npm run dev
+```
+
+Open the URL Vite prints. With a backend (`app.api`) running on port 5001, you'll land on onboarding, then see any peer running on the same LAN appear live under Nearby, and can open a real conversation with them under Chats.
 
 ## Build status
 
@@ -59,6 +72,16 @@ This repo is the design; the app itself is being built in step with it, phase by
 - **File sharing** — any file type, offer/accept consent before anything moves, a dedicated connection per transfer so large files stream straight to disk, receiver-side hash verification, and resume from the exact byte offset after a drop. Executable/installable files get a distinctly stronger warning.
 - A local API layer (`app.api`, FastAPI) now wraps all of the above for a future UI to call instead of a human typing into the CLI.
 - Everything below File sharing is designed (see the screens above) but not yet built.
+
+**Desktop app** (Electron + this same React UI + the Python backend, spawned as a background process):
+
+| Step | Status |
+|---|---|
+| Local API layer | ✅ done |
+| Onboarding + live Nearby | ✅ done |
+| Live Chats | ✅ done |
+| Files screen | ⏳ not started |
+| Electron packaging | ⏳ not started |
 
 ## What's designed here
 
