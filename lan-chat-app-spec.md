@@ -1,6 +1,13 @@
-# Agora — LAN-First Chat & Call App — Architecture + Build Plan + Coding Prompt
+# Agora — Architecture + Build Plan + Coding Prompt
 
-A messaging + voice/video calling app that works over a local WiFi network with **zero internet dependency**, and optionally syncs/upgrades to internet mode when available.
+**Positioning: this is not "another messaging app."** Agora is private, serverless, local communication for places where internet connectivity, privacy, or account-based communication is undesirable or unavailable — messaging, file sharing, and voice/video calling that work over a local network with **zero internet dependency**, and optionally upgrade to internet mode when it happens to be available.
+
+**Three pillars:**
+- **Offline / emergency** — internet is down or was never there. Agora still works, because it never needed it.
+- **Local / private** — messages stay on the local network instead of routing through a central server anyone else controls or could be compelled to hand over.
+- **Temporary communities** — walk into a location, discover who else is there right now, talk, leave. No account persists the connection afterward.
+
+**Where this fits:** universities & campuses, classrooms, conferences & events, airplanes, hospitals during a network outage, disaster/emergency response, remote areas (villages, mountains, camps, construction sites), military/security environments, factories & warehouses, hotels/resorts, gaming/LAN parties, family/group trips, privacy-sensitive meetings, events with overloaded cellular networks, and temporary/pop-up networks (field teams, exhibitions, disaster-response deployments). Many of these span more than one pillar at once — a disaster-response deployment is simultaneously offline, private, and temporary — which is the point: this isn't a niche feature, it's the same underlying property (no server, no internet requirement, no persistent account) showing up everywhere a "normal" messaging app quietly assumes connectivity, trust in a third party, and permanence that the situation doesn't actually have.
 
 **Why "Agora"?** In ancient Greek city-states, the agora was the open public square people gathered in to talk and trade, with no central authority presiding over it — no server in the middle, no account system, no company routing the conversation. Just people in the same local space (here, the same WiFi network) talking directly.
 
