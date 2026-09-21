@@ -25,7 +25,7 @@ Decided 2026-09-21: ship this as a real installable Windows app (like Discord/Sl
 | 1 — Local FastAPI wrapper around the existing backend | ✅ done (single-machine verified) |
 | 2 — Port design to React, wire Nearby/onboarding to live discovery | ✅ done (single-machine verified) |
 | 3 — Wire Chat screens to messaging | ✅ done (single-machine verified) |
-| 4 — Wire file-sharing screens to file transfer | ⏳ not started |
+| 4 — Wire file-sharing screens to file transfer | ✅ done (single-machine verified) |
 | 5 — Electron shell, sidecar process spawning, installer packaging | ⏳ not started |
 
 ### Step 1 — Local API layer — ✅ DONE
@@ -86,6 +86,29 @@ Decided 2026-09-21: ship this as a real installable Windows app (like Discord/Sl
 - No message-history pagination — `GET /messages/{peer_id}` defaults to the last 50; fine for now, will matter once conversations get long.
 - No "typing…" indicator or read receipts beyond the existing delivered/received status.
 - Optimistic messages use a client-generated `msg_id` (`pending-<timestamp>`) that's replaced wholesale by the next history poll rather than reconciled in place — cosmetically fine (no duplicate renders observed) but worth revisiting if sends ever need per-message retry UI.
+
+### Step 4 — Files screen wired to file transfer — ✅ DONE
+
+**What was built:** [frontend/src/components/FilesScreen.jsx](frontend/src/components/FilesScreen.jsx) — same two-pane pattern as Chats (live peer list left, transfer list right for the selected peer).
+
+- `GET /files/{peer_id}` polled every 2s, plus a `WS /events` listener that refetches immediately on `file_offer`/`file_status` so a new incoming offer or a completion doesn't wait for the next poll tick.
+- Sending is a path-input row (there's no real OS file picker yet — this is a dev-mode browser tab, not Electron — so it mirrors the CLI's `send <peer> <path>` model: type/paste an absolute path on this machine). Typing a path with an executable-ish extension (`.apk .exe .msi .bat .cmd .com .sh .jar .appimage .ps1`) shows a warning *before* sending, matching the backend's own `EXECUTABLE_EXTS` set.
+- Each transfer card shows filename, direction, size, timestamp, and a status pill; a received offer still `awaiting_accept` gets **Accept**/**Decline** buttons; a `.apk`/`.exe`/etc. offer gets a red border and an inline "only accept if you trust this person" warning; a completed received file shows its saved path; a failed *sent* transfer gets a **Retry** button (calls `resend()`).
+
+**Bug caught during verification, fixed before considering this done:** the Accept/Decline buttons and the executable warning were initially gated on `f.status === "offered"` — but that string is only ever used for the *sender's own* record. The receiver's copy of a fresh offer is saved as `"awaiting_accept"` (see `filetransfer.py`'s `_handle_offer`), so the buttons silently never appeared on the receiving side. Caught by actually clicking through Bob's real UI (not just checking the sender's screen) and fixed by switching both conditions to `"awaiting_accept"`.
+
+**Test performed** (two real backend instances, two real frontend windows — Alice on 5173/5001, Bob on 5174/5002 — headless Chrome driving both over the DevTools protocol so real clicks landed in both pages):
+- ✅ Sent a normal `.txt` file from Alice's Files screen (typed path, clicked Send) — appeared instantly on Alice's side as `Awaiting response`.
+- ✅ Typed a `.apk` path and confirmed the pre-send warning appeared before clicking Send.
+- ✅ On Bob's real UI: both offers appeared as `Awaiting response` with **Accept**/**Decline** buttons, and the `.apk` card had the red border + inline trust warning.
+- ✅ Clicked **Accept** (a real DOM click, not an API call) on the `.txt` offer — card moved to `Completed` with the correct `saved to <path>` line.
+- ✅ Clicked **Decline** on the `.apk` offer — card moved to `Declined`, no transfer ever started, matching the backend's decline-before-any-bytes-move design.
+- ✅ Alice's own screen reflected both outcomes (`Completed` / implicitly declined) once Bob acted, confirmed via the sender-side card list.
+
+**Known limitations / not yet done:**
+- No real file picker — a full path must be typed/pasted. This is inherent to running as a browser tab; Electron (Step 5) can use a native `<input type="file">` with real path access or its own dialog API.
+- No transfer progress bar — status jumps straight from `awaiting_accept`/`accepted` to `completed`/`failed` in the UI, even though the backend streams in 256KB chunks. Fine for the small files tested; worth adding for large transfers.
+- `resend()`/Retry is wired but only meaningfully tested at the API level in `_test_filetransfer.py`, not re-verified through this screen's button in this pass.
 
 ## Test it yourself
 
