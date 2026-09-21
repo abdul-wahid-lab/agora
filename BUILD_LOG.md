@@ -23,7 +23,7 @@ Decided 2026-09-21: ship this as a real installable Windows app (like Discord/Sl
 | Step | Status |
 |---|---|
 | 1 — Local FastAPI wrapper around the existing backend | ✅ done (single-machine verified) |
-| 2 — Port design to React, wire Nearby/onboarding to live discovery | ⏳ not started |
+| 2 — Port design to React, wire Nearby/onboarding to live discovery | 🔶 in progress — Nearby live, onboarding not started |
 | 3 — Wire Chat screens to messaging | ⏳ not started |
 | 4 — Wire file-sharing screens to file transfer | ⏳ not started |
 | 5 — Electron shell, sidecar process spawning, installer packaging | ⏳ not started |
@@ -43,6 +43,24 @@ Decided 2026-09-21: ship this as a real installable Windows app (like Discord/Sl
 - ✅ `WS /events` — connected a plain websocket client, sent a message from the other side via REST, confirmed the `message` event arrived over the socket in real time.
 
 **Known limitations:** peer-join/leave events are driven by a 1.5s poll of the in-memory registry inside the API process (not push-based from discovery.py itself) — fine for a single UI client, would need a proper pub/sub if this ever needed to support multiple simultaneous local UI connections. `on_event("startup"/"shutdown")` is FastAPI's older lifecycle API (still functional in 0.141, but the newer `lifespan` context-manager style is preferred going forward — left as-is since it works and isn't worth a churn-only change right now).
+
+### Step 2 — React port — 🔶 IN PROGRESS (Nearby live)
+
+**What was built:** [frontend/](frontend/) — a Vite + React app (plain React for now, not yet wrapped in Electron — that's Step 5).
+
+- [frontend/src/api.js](frontend/src/api.js) — client for `backend/app/api.py`: REST calls plus `connectEvents()`, a `WS /events` subscriber with auto-reconnect and backoff.
+- [frontend/src/index.css](frontend/src/index.css) — design tokens lifted directly from the Agora design file: same palette (`#efe7dd` ground, `#e2703a` terracotta accent), same type pairing (Instrument Serif / Hanken Grotesk / IBM Plex Mono).
+- [frontend/src/components/Sidebar.jsx](frontend/src/components/Sidebar.jsx) — the four-item nav rail (Nearby/Chats/Calls/Files) from the design.
+- [frontend/src/components/NearbyScreen.jsx](frontend/src/components/NearbyScreen.jsx) — **fully live**, not mock data: polls `GET /peers` every 1.5s, layers `WS /events` (`peer_joined`/`peer_left`) on top for faster updates, shows the empty state when no peers are visible, renders per-peer transport (`via mdns`/`via udp`) exactly like the CLI did.
+- [frontend/src/App.jsx](frontend/src/App.jsx) — shell + a live bottom status bar (`LAN-only` / `backend unreachable`, peer count) polling `GET /me` + `GET /peers`.
+
+**Test performed:** ran two backend instances (`AGORA_NAME=Alice`/`Bob`, ports 8001/8002, APIs on 5001/5002) plus the Vite dev server, pointed the frontend's `.env` at Alice's API (`http://127.0.0.1:5001`), and screenshotted the running page. Confirmed end-to-end, not simulated: the page showed "you are Alice · peer_id 200cbb31" (live from `GET /me`) and a real "Bob · 192.168.1.103:8002 · via udp" row (live from `GET /peers`), with the status bar correctly reading "LAN-only · 1 peer".
+
+**Known limitations / not yet done:**
+- Onboarding (splash/permissions/profile-setup) isn't built yet — the app currently opens straight to Nearby. Permission prompts (mic/camera/notifications) don't mean much in a plain browser anyway; they'll matter more once Electron (Step 5) can trigger real OS-level prompts.
+- Chats, Calls, and Files nav items exist but just show a "coming next" placeholder — Steps 3 and 4.
+- No way yet to rename the device from the UI — `device_name` is fixed at backend startup via an env var, not exposed as an API endpoint. Profile setup will need a small backend addition (e.g. `PUT /me`) before it can be more than cosmetic.
+- Chrome headless was used to verify rendering during development (`--screenshot` against the Vite dev server) — not a permanent test harness, just how this was checked without a person clicking through it manually.
 
 ## Test it yourself
 
@@ -70,6 +88,22 @@ Wait a couple seconds, then in either one: `peers` (the other should show up), t
 4. Same `peers` / `<name> <message>` / `history <name>` commands as above.
 
 If peers show up in `peers` but messages stay stuck on `pending` forever, that's very likely **router AP/client isolation** (spec §4's known edge case) — try a phone hotspot as a comparison, since hotspots don't isolate clients from each other.
+
+**The actual UI (Nearby only, so far).** Needs the backend API running plus the frontend dev server:
+
+```powershell
+# terminal 1 - backend + API
+cd D:\Agora\backend
+$env:AGORA_NAME="Alice"; $env:AGORA_PORT="8001"
+.\agora\Scripts\python.exe -m uvicorn app.api:app --host 127.0.0.1 --port 5001
+
+# terminal 2 - frontend
+cd D:\Agora\frontend
+npm install   # first time only
+npm run dev
+```
+
+Open the URL Vite prints (`http://localhost:5173`). Start a second backend instance the same way (different `AGORA_NAME`/`AGORA_PORT`/API port) on another machine, or on this one with a different port, and it'll show up live in the Nearby list — no refresh needed.
 
 ---
 

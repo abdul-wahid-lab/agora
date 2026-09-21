@@ -1,0 +1,39 @@
+@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
+
+:root {
+  --ground: #efe7dd;
+  --surface: #fbf7f2;
+  --surface-2: #f3ece2;
+  --border: #e3d9ce;
+  --text: #2a2320;
+  --text-2: #7d7168;
+  --text-3: #a2968b;
+  --accent: #e2703a;
+  --accent-strong: #c2562a;
+  --accent-soft: #fbe4d3;
+  --danger: #c2352a;
+  --danger-soft: #f5dad6;
+  --shadow: 0 24px 60px rgba(70, 45, 25, 0.14);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--text);
+  font-family: "Hanken Grotesk", -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.serif { font-family: "Instrument Serif", serif; }
+.mono { font-family: "IBM Plex Mono", ui-monospace, Consolas, monospace; }
+
+button {
+  font: inherit;
+  cursor: pointer;
+}
+
+#root {
+  min-height: 100vh;
+}
