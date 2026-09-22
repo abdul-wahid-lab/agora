@@ -47,15 +47,16 @@ class MessagingService:
         discovery: PeerDiscovery,
         store: MessageStore,
         on_message: Optional[Callable[[IncomingMessage], None]] = None,
-        on_control: Optional[Callable[[str, str, dict], "asyncio.Future"]] = None,
     ):
         self.discovery = discovery
         self.store = store
         self.on_message = on_message
-        # Lets other services (file transfer) ride this same connection for
-        # their own message types without messaging.py needing to know
-        # anything about them. Called as on_control(msg_type, peer_id, msg).
-        self.on_control = on_control
+        # Lets other services (file transfer, calling) ride this same
+        # connection for their own message types without messaging.py
+        # needing to know anything about them. Each handler is called as
+        # handler(msg_type, peer_id, msg) for every control frame - it's the
+        # handler's own job to ignore types it doesn't recognize.
+        self._control_handlers: list[Callable[[str, str, dict], "asyncio.Future"]] = []
 
         self.peer_id = discovery.peer_id
         self.device_name = discovery.device_name
@@ -99,8 +100,8 @@ class MessagingService:
                     await ws.send(json.dumps({"type": "ack", "msg_id": msg["msg_id"]}))
                 elif mtype == "ack":
                     await self.store.update_status(msg["msg_id"], "delivered")
-                elif remote_peer_id and self.on_control:
-                    await self.on_control(mtype, remote_peer_id, msg)
+                elif remote_peer_id:
+                    await self._dispatch_control(mtype, remote_peer_id, msg)
         except websockets.ConnectionClosed:
             pass
 
@@ -140,12 +141,24 @@ class MessagingService:
                 mtype = msg.get("type")
                 if mtype == "ack":
                     await self.store.update_status(msg["msg_id"], "delivered")
-                elif self.on_control:
-                    await self.on_control(mtype, peer_id, msg)
+                else:
+                    await self._dispatch_control(mtype, peer_id, msg)
         except websockets.ConnectionClosed:
             pass
         finally:
             await self._drop_connection(peer_id)
+
+    # -- control message fan-out ------------------------------------------
+
+    def add_control_handler(self, handler: Callable[[str, str, dict], "asyncio.Future"]) -> None:
+        """Registers another service (file transfer, calling, ...) to receive
+        every control-type frame this connection sees. Each handler decides
+        for itself which message types it cares about."""
+        self._control_handlers.append(handler)
+
+    async def _dispatch_control(self, mtype: str, peer_id: str, msg: dict) -> None:
+        for handler in self._control_handlers:
+            await handler(mtype, peer_id, msg)
 
     async def _drop_connection(self, peer_id: str) -> None:
         async with self._lock:
