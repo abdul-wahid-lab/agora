@@ -77,6 +77,7 @@ class FileTransferService:
         on_offer: Optional[Callable[[IncomingFileOffer], None]] = None,
         on_progress: Optional[Callable[[str, int, int], None]] = None,  # transfer_id, bytes_so_far, total
         on_received: Optional[Callable[[str, str, Optional[str]], None]] = None,  # transfer_id, status, saved_path
+        is_call_active: Optional[Callable[[], bool]] = None,
     ):
         self.discovery = discovery
         self.messaging = messaging
@@ -88,6 +89,11 @@ class FileTransferService:
         self.on_offer = on_offer
         self.on_progress = on_progress
         self.on_received = on_received
+        # Lets the caller (api.py) tell this service whether a call is
+        # currently connected, without file transfer needing to import or
+        # know anything about CallService. Per spec: a large transfer
+        # shouldn't be free to saturate the LAN link while a call is live.
+        self.is_call_active = is_call_active or (lambda: False)
 
         self._offer_waiters: dict[str, asyncio.Future] = {}
         self._result_waiters: dict[str, asyncio.Future] = {}
@@ -97,7 +103,7 @@ class FileTransferService:
         self._outgoing_paths: dict[str, str] = {}
         self._listeners: dict[str, asyncio.AbstractServer] = {}
 
-        messaging.on_control = self._on_control
+        messaging.add_control_handler(self._on_control)
 
     # -- sending -------------------------------------------------------
 
@@ -192,6 +198,14 @@ class FileTransferService:
                     sent += len(chunk)
                     if self.on_progress:
                         self.on_progress(transfer_id, sent, total_size)
+                    if self.is_call_active():
+                        # Throttle, don't stop - a call in progress means the
+                        # LAN link matters more for voice/video than transfer
+                        # speed. This isn't a real bandwidth allocator (no
+                        # traffic shaping, no per-flow guarantee), just a
+                        # deliberate pause between chunks so a large transfer
+                        # backs off and leaves more of the link to the call.
+                        await asyncio.sleep(0.2)
         finally:
             writer.close()
             await writer.wait_closed()

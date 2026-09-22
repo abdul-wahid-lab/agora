@@ -4,7 +4,7 @@
 
 **Where this fits:** campuses and classrooms, conferences, airplanes, hospitals during a network outage, disaster/emergency response, remote sites (construction, camps, villages), factories and warehouses, LAN parties, and any privacy-sensitive gathering where a central server is a liability, not a feature.
 
-This repository holds the **visual design** — a single interactive canvas covering all 37 screens of the app — the **working backend** for the phases built so far, and a **real React desktop UI** (onboarding, live nearby, and live chat all wired to that backend, not mockups).
+This repository holds the **visual design** — a single interactive canvas covering all 37 mobile screens plus a dedicated desktop section — the **working backend** for the phases built so far, and a **real desktop app** (React UI rebuilt to match the actual design file pixel-for-pixel, running inside Electron with the Python backend spawned automatically — not a browser tab, not mockups).
 
 ![Onboarding: splash, permissions, profile setup, and the live nearby-peers view](readme_hero_onboarding.png)
 
@@ -41,18 +41,27 @@ Once both are running, type `peers` in either one to see the other appear on the
 
 There's also a local HTTP/WebSocket API (`app.api`) for driving this programmatically instead of through the CLI — `uvicorn app.api:app --host 127.0.0.1 --port 5001` exposes `GET /peers`, `POST /messages`, `POST /files/send`, and a `WS /events` stream. This is what the desktop UI below actually talks to.
 
-## Run the desktop UI
+## Run the desktop app
 
-A real Vite + React app, not a mockup — it talks to the API above over `127.0.0.1` only, and every screen it renders is live data.
+The real thing - a frameless Electron window with its own custom titlebar, spawning the Python backend automatically. No terminal to babysit, no browser tab.
 
 ```bash
 cd frontend
 npm install
+npm run electron:dev
+```
+
+That's it - Electron starts the backend for you (writing its data to a proper per-user app-data folder) and opens the real app window. `npm run electron:build` produces a Windows installer via electron-builder.
+
+Prefer just the web UI in a browser tab for development? That still works:
+
+```bash
+cd frontend
 echo VITE_API_BASE=http://127.0.0.1:5001 > .env
 npm run dev
 ```
 
-Open the URL Vite prints. With a backend (`app.api`) running on port 5001, you'll land on onboarding, then see any peer running on the same LAN appear live under Nearby, and can open a real conversation with them under Chats.
+(with a backend already running on port 5001 via `app.api`, as above).
 
 ## Build status
 
@@ -63,25 +72,26 @@ This repo is the design; the app itself is being built in step with it, phase by
 | 1 — Discovery | ✅ done | 1.1–1.4c (onboarding), 3.1–3.3 (nearby) |
 | 2 — Messaging | ✅ done | 4.1–4.5, 7.2 |
 | 2B — File sharing | ✅ done | 8.1–8.7 |
-| 3 — Calling | ⏳ not started | 5.1–5.6, 5.2b, 7.3, 7.4 |
-| 4 — Hybrid mode | ⏳ not started | 6.2, 7.1 |
+| 3 — Calling | ✅ done | 5.1–5.6, 5.2b, 7.3, 7.4 |
+| 4 — Hybrid mode | ❌ removed by design — LAN/WiFi-only, always; internet availability is never checked | ~~6.2, 7.1~~ |
 | 5 — Polish | ⏳ not started | 6.1, 6.3–6.5 |
 
 - **Discovery** — devices find each other on the LAN via mDNS, with a UDP broadcast fallback for networks that filter it. Verified: peers appear/disappear live as they join and leave.
 - **Messaging** — direct WebSocket between peers (no server in between), messages persisted locally per device, with sent/delivered acknowledgment. Verified: a message sent to a peer that just dropped off the network is held and delivered exactly once, in order, once that peer reappears.
-- **File sharing** — any file type, offer/accept consent before anything moves, a dedicated connection per transfer so large files stream straight to disk, receiver-side hash verification, and resume from the exact byte offset after a drop. Executable/installable files get a distinctly stronger warning.
-- A local API layer (`app.api`, FastAPI) now wraps all of the above for a future UI to call instead of a human typing into the CLI.
-- Everything below File sharing is designed (see the screens above) but not yet built.
+- **File sharing** — any file type, offer/accept consent before anything moves, a dedicated connection per transfer so large files stream straight to disk, receiver-side hash verification, and resume from the exact byte offset after a drop. Executable/installable files get a distinctly stronger warning, plus bandwidth-sharing that measurably throttles transfers while a call is active.
+- **Calling** — real peer-to-peer WebRTC audio and video (no STUN/TURN — same subnet never needs it), signaling relayed over the existing WebSocket rather than any cloud service. Deterministic collision handling if both sides call each other at once, a persisted call history, and an incoming-call toast that shows up regardless of which screen you're on.
+- A local API layer (`app.api`, FastAPI) wraps all of the above for the UI to call instead of a human typing into a CLI.
 
-**Desktop app** (Electron + this same React UI + the Python backend, spawned as a background process):
+**Desktop app** — a real Electron window, not a browser tab:
 
-| Step | Status |
+| Piece | Status |
 |---|---|
 | Local API layer | ✅ done |
-| Onboarding + live Nearby | ✅ done |
-| Live Chats | ✅ done |
-| Files screen | ⏳ not started |
-| Electron packaging | ⏳ not started |
+| UI rebuilt to match the actual design file (not an approximation) | ✅ done |
+| Nearby, Chats, Files, Calls — all live, all wired to the real backend | ✅ done |
+| Electron packaging (frameless window, auto-spawned backend, Windows installer) | ✅ done |
+
+Not built: group chat and group/mesh calling (the design shows them; the backend has no concept of a "group" yet — that's real, separate future work, not a UI gap).
 
 ## What's designed here
 
@@ -101,6 +111,12 @@ This repo is the design; the app itself is being built in step with it, phase by
 - **Palette:** warm cream neutrals with a terracotta accent, standing in for presence/signal rather than a cold tech blue.
 - **Type:** Instrument Serif for display headings, Hanken Grotesk for interface text, IBM Plex Mono for technical/metadata labels.
 - **Signature motif:** a recurring "presence pulse" used anywhere a peer is shown as reachable right now — since the entire value of the app is "who can I actually talk to on this network."
+
+## Security posture (honest, as of now)
+
+- The local API binds to `127.0.0.1` only and its CORS is restricted to the app's own origins — a wildcard wouldn't be safe even on loopback, since any webpage open in any browser could otherwise call it directly with no auth.
+- **Peer-to-peer traffic is not yet encrypted.** Messages, files, and call signaling travel as plain `ws://`/TCP between devices on the LAN — anyone else on the same WiFi could passively read it. The UI doesn't claim otherwise ("direct, device-to-device," not "encrypted"). Real transport encryption is planned Phase 5 work, not yet built.
+- There's no cryptographic identity — nothing stops a device on the LAN from claiming any peer_id it wants. Treat this as appropriate for trusted/private networks for now, not hostile ones.
 
 ## Why this matters for the app itself
 

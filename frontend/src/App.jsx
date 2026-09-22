@@ -1,18 +1,45 @@
 import { useEffect, useState } from "react";
-import Sidebar from "./components/Sidebar";
-import NearbyScreen from "./components/NearbyScreen";
-import ChatsScreen from "./components/ChatsScreen";
+import TitleBar from "./components/TitleBar";
+import IconRail from "./components/IconRail";
+import StatusBar from "./components/StatusBar";
+import PeerList from "./components/PeerList";
+import ChatsListPanel from "./components/ChatsListPanel";
+import ConversationPane from "./components/ConversationPane";
+import InfoSidebar from "./components/InfoSidebar";
+import CallsScreen from "./components/CallsScreen";
+import CallOverlay from "./components/CallOverlay";
+import FilesScreen from "./components/FilesScreen";
 import Onboarding from "./components/Onboarding";
 import { api } from "./api";
+import { useCall } from "./hooks/useCall";
+import { usePeers } from "./hooks/usePeers";
 
 const ONBOARDING_KEY = "agora.onboarded";
 
 export default function App() {
   const [onboarded, setOnboarded] = useState(() => localStorage.getItem(ONBOARDING_KEY) === "1");
   const [active, setActive] = useState("nearby");
+  const [selectedPeerId, setSelectedPeerId] = useState(null);
   const [me, setMe] = useState(null);
   const [peerCount, setPeerCount] = useState(0);
   const [connected, setConnected] = useState(false);
+  const peers = usePeers();
+  const {
+    call,
+    error: callError,
+    elapsed,
+    muted,
+    cameraOff,
+    localVideoRef,
+    remoteVideoRef,
+    remoteAudioRef,
+    placeCall,
+    acceptCall,
+    declineCall,
+    hangUp,
+    toggleMute,
+    toggleCamera,
+  } = useCall();
 
   function finishOnboarding(chosenName) {
     // NOTE: this doesn't actually rename the device on the network yet -
@@ -46,58 +73,65 @@ export default function App() {
   }, []);
 
   if (!onboarded) {
-    return (
-      <div style={{ display: "flex", height: "100vh", background: "var(--ground)" }}>
-        <Onboarding onComplete={finishOnboarding} />
-      </div>
-    );
+    return <Onboarding onComplete={finishOnboarding} />;
+  }
+
+  const selectedPeer = peers.find((p) => p.peer_id === selectedPeerId) || null;
+
+  function handleSelectTab(tab) {
+    setActive(tab);
+  }
+
+  function handleOpenCall(peerId, media) {
+    placeCall(peerId, media);
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-        <Sidebar active={active} onSelect={setActive} />
-        <main style={{ flex: 1, display: "flex", minWidth: 0, background: "var(--ground)" }}>
-          {active === "nearby" && <NearbyScreen me={me} />}
-          {active === "chats" && <ChatsScreen />}
-          {active !== "nearby" && active !== "chats" && (
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)" }}>
-              <p className="serif" style={{ fontSize: 22 }}>
-                {active[0].toUpperCase() + active.slice(1)} — coming next
-              </p>
-            </div>
-          )}
-        </main>
+    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
+      <TitleBar connected={connected} peerCount={peerCount} />
+
+      <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+        <IconRail active={active} onSelect={handleSelectTab} selfInitial={me?.device_name?.[0]?.toUpperCase()} />
+
+        {active === "nearby" && (
+          <>
+            <PeerList peers={peers} selected={selectedPeerId} onSelect={setSelectedPeerId} onRescan={() => {}} />
+            <ConversationPane peer={selectedPeer} onOpenCall={handleOpenCall} />
+            <InfoSidebar peer={selectedPeer} />
+          </>
+        )}
+
+        {active === "chats" && (
+          <>
+            <ChatsListPanel peers={peers} selected={selectedPeerId} onSelect={setSelectedPeerId} />
+            <ConversationPane peer={selectedPeer} onOpenCall={handleOpenCall} />
+            <InfoSidebar peer={selectedPeer} />
+          </>
+        )}
+
+        {active === "calls" && <CallsScreen onPlaceCall={placeCall} />}
+
+        {active === "files" && <FilesScreen />}
       </div>
 
-      <div
-        style={{
-          flexShrink: 0,
-          height: 30,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "0 16px",
-          borderTop: "1px solid var(--border)",
-          background: "var(--surface)",
-          fontSize: 12,
-        }}
-      >
-        <span style={{ display: "flex", alignItems: "center", gap: 6, color: connected ? "var(--accent-strong)" : "var(--danger)" }}>
-          <span
-            style={{
-              width: 7,
-              height: 7,
-              borderRadius: "50%",
-              background: connected ? "var(--accent)" : "var(--danger)",
-            }}
-          />
-          {connected ? "LAN-only" : "backend unreachable"}
-        </span>
-        <span className="mono" style={{ color: "var(--text-3)" }}>
-          {peerCount} {peerCount === 1 ? "peer" : "peers"}
-        </span>
-      </div>
+      <StatusBar connected={connected} right={callError || (me ? `peer_id ${me.peer_id.slice(0, 8)}` : "")} />
+
+      <CallOverlay
+        call={call}
+        peerName={peers.find((p) => p.peer_id === call?.peerId)?.name || "Unknown"}
+        elapsed={elapsed}
+        muted={muted}
+        cameraOff={cameraOff}
+        localVideoRef={localVideoRef}
+        remoteVideoRef={remoteVideoRef}
+        remoteAudioRef={remoteAudioRef}
+        onAccept={acceptCall}
+        onDecline={declineCall}
+        onHangUp={() => hangUp()}
+        onCancel={() => hangUp()}
+        onToggleMute={toggleMute}
+        onToggleCamera={toggleCamera}
+      />
     </div>
   );
 }

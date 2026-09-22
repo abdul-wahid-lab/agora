@@ -1,19 +1,33 @@
 @import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
 :root {
-  --ground: #efe7dd;
-  --surface: #fbf7f2;
-  --surface-2: #f3ece2;
-  --border: #e3d9ce;
+  /* Exact values pulled from the design file's desktop screens
+     (D:\Agora\ui prompt\Agora-standalone.html, screens 10.1-10.10) via
+     computed inline styles - not eyeballed. See BUILD_LOG for how these
+     were extracted. */
+  --ground: #fbf7f2;       /* main content area background */
+  --chrome: #f0e8df;       /* title bar / status bar */
+  --rail: #f5eee6;         /* icon nav rail background */
+  --panel: #fdfaf6;        /* list panel / conversation header+composer */
+  --surface: #ffffff;      /* cards, inputs - pure white in the design */
+  --surface-2: #f3e8dd;    /* tip/info card fill */
+  --border: #e3d9ce;       /* outer shell / button borders */
+  --border-soft: #ecdfd2;  /* inner card borders */
+  --divider: #e9dfd4;      /* panel/header dividers */
   --text: #2a2320;
   --text-2: #7d7168;
   --text-3: #a2968b;
+  --text-strong: #5d4f45;  /* button labels, list item secondary emphasis */
+  --text-muted: #9a8c81;   /* status bar, "decide later" links */
   --accent: #e2703a;
   --accent-strong: #c2562a;
   --accent-soft: #fbe4d3;
+  --avatar-self: #f0d9c6;  /* "your own" avatar fill */
+  --icon-muted: #b5a89c;   /* inactive nav-rail icon strokes */
   --danger: #c2352a;
   --danger-soft: #f5dad6;
   --shadow: 0 24px 60px rgba(70, 45, 25, 0.14);
+  --shadow-window: 0 30px 70px rgba(70, 45, 25, 0.2);
 }
 
 * { box-sizing: border-box; }
@@ -36,4 +50,28 @@ button {
 
 #root {
   min-height: 100vh;
+}
+
+/* Named to match the design file's own animation names (agRing, agPulse,
+   agSweep, agBlink) - the design references them by name but the keyframe
+   bodies themselves aren't inspectable from computed styles, so these are
+   built to match the described effect (expanding presence ring, subtle
+   status-dot pulse, radar sweep, text-cursor blink) rather than copied
+   verbatim. */
+@keyframes agRing {
+  0% { transform: scale(0.85); opacity: 0.7; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+@keyframes agPulse {
+  0%, 100% { transform: scale(1); opacity: 0.9; }
+  50% { transform: scale(1.8); opacity: 0; }
+}
+@keyframes agSweep {
+  0% { transform: scale(0.6); opacity: 0; }
+  40% { opacity: 1; }
+  100% { transform: scale(1); opacity: 0; }
+}
+@keyframes agBlink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
 }

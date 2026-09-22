@@ -4,3 +4,7 @@ __pycache__/
 *.log
 *.db
 .env
+node_modules/
+dist/
+.vite/
+release/
