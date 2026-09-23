@@ -8,3 +8,5 @@ node_modules/
 dist/
 .vite/
 release/
+backend/build/
+backend/*.spec
