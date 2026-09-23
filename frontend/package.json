@@ -10,8 +10,9 @@
     "lint": "oxlint",
     "preview": "vite preview",
     "electron:dev": "concurrently -k -s first \"vite\" \"wait-on tcp:5173 && electron .\"",
-    "electron:build": "vite build && electron-builder",
-    "electron:pack": "vite build && electron-builder --dir"
+    "build:backend": "node scripts/build-backend.cjs",
+    "electron:build": "npm run build:backend && vite build && electron-builder",
+    "electron:pack": "npm run build:backend && vite build && electron-builder --dir"
   },
   "dependencies": {
     "react": "^19.2.8",
@@ -41,15 +42,8 @@
     ],
     "extraResources": [
       {
-        "from": "../backend",
-        "to": "backend",
-        "filter": [
-          "**/*",
-          "!__pycache__",
-          "!*.db",
-          "!*.log",
-          "!downloads/**"
-        ]
+        "from": "../backend/dist/agora-backend",
+        "to": "backend"
       }
     ],
     "win": {
