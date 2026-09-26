@@ -172,6 +172,7 @@ async def _watch_peers() -> None:
         left = known - current.keys()
         for pid in joined:
             p = current[pid]
+            await store.save_known_peer(p.peer_id, p.name)
             await _broadcast({"type": "peer_joined", "peer_id": p.peer_id, "name": p.name, "address": p.address, "port": p.port, "source": p.source})
         for pid in left:
             await _broadcast({"type": "peer_left", "peer_id": pid})

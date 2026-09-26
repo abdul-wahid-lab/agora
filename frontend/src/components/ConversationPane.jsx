@@ -48,7 +48,7 @@ const EXECUTABLE_EXTS = new Set(["apk", "exe", "msi", "bat", "cmd", "com", "sh",
 // stores (see storage.py) but read as one timeline here, sorted by time -
 // that interleaving is what the design shows, even though the underlying
 // APIs stay separate.
-export default function ConversationPane({ peer, onOpenCall }) {
+export default function ConversationPane({ peer, online = true, onOpenCall }) {
   const [messages, setMessages] = useState([]);
   const [files, setFiles] = useState([]);
   const [progressByTransfer, setProgressByTransfer] = useState({});
@@ -187,18 +187,20 @@ export default function ConversationPane({ peer, onOpenCall }) {
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600, fontSize: 15.5 }}>{peer.name}</div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 6, height: 6, borderRadius: 99, background: "var(--accent)" }} />
+            <span style={{ width: 6, height: 6, borderRadius: 99, background: online ? "var(--accent)" : "var(--text-3)" }} />
             {/* NOT "encrypted" - the P2P WebSocket is plain ws://, no
                 transport encryption exists yet (see BUILD_LOG's Security
                 posture section). Don't claim a protection that isn't real. */}
-            <span style={{ fontSize: 12, color: "var(--text-2)", fontWeight: 500 }}>On this network · direct, device-to-device</span>
+            <span style={{ fontSize: 12, color: "var(--text-2)", fontWeight: 500 }}>
+              {online ? "On this network · direct, device-to-device" : "Not on this network right now · showing saved history"}
+            </span>
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={() => onOpenCall(peer.peer_id, "audio")} style={pillButtonStyle}>
+          <button onClick={() => onOpenCall(peer.peer_id, "audio")} disabled={!online} title={online ? undefined : "Not reachable right now"} style={{ ...pillButtonStyle, opacity: online ? 1 : 0.5 }}>
             Call
           </button>
-          <button onClick={() => onOpenCall(peer.peer_id, "video")} style={pillButtonStyle}>
+          <button onClick={() => onOpenCall(peer.peer_id, "video")} disabled={!online} title={online ? undefined : "Not reachable right now"} style={{ ...pillButtonStyle, opacity: online ? 1 : 0.5 }}>
             Video
           </button>
           <button style={{ width: 34, height: 34, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, color: "var(--text-muted)" }}>
