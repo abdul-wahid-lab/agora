@@ -23,7 +23,7 @@ export default function App() {
   const [me, setMe] = useState(null);
   const [peerCount, setPeerCount] = useState(0);
   const [connected, setConnected] = useState(false);
-  const peers = usePeers();
+  const { peers, refreshing: rescanning, refresh: rescan } = usePeers();
   const {
     call,
     error: callError,
@@ -96,7 +96,7 @@ export default function App() {
 
         {active === "nearby" && (
           <>
-            <PeerList peers={peers} selected={selectedPeerId} onSelect={setSelectedPeerId} onRescan={() => {}} />
+            <PeerList peers={peers} selected={selectedPeerId} onSelect={setSelectedPeerId} onRescan={rescan} scanning={rescanning} />
             <ConversationPane peer={selectedPeer} onOpenCall={handleOpenCall} />
             <InfoSidebar peer={selectedPeer} />
           </>

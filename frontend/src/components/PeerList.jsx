@@ -3,7 +3,7 @@ import { paletteFor, initials } from "../lib/avatar";
 // Matches design screens 10.2/10.7 exactly: serif "Nearby" heading + Rescan
 // pill, a (visual-only for now) search field, an "ON THIS NETWORK · N"
 // section label, and rows with an animated presence ring on the avatar.
-export default function PeerList({ peers, selected, onSelect, onRescan, title = "Nearby", emptyText = "Nobody has announced themselves on this network yet." }) {
+export default function PeerList({ peers, selected, onSelect, onRescan, scanning = false, title = "Nearby", emptyText = "Nobody has announced themselves on this network yet." }) {
   return (
     <div style={{ width: 300, flex: "0 0 auto", borderRight: "1px solid var(--divider)", background: "var(--panel)", display: "flex", flexDirection: "column" }}>
       <div style={{ flex: "0 0 auto", padding: "18px 18px 12px", display: "flex", flexDirection: "column", gap: 12 }}>
@@ -14,9 +14,14 @@ export default function PeerList({ peers, selected, onSelect, onRescan, title = 
           {onRescan && (
             <button
               onClick={onRescan}
-              style={{ padding: "6px 11px", borderRadius: 99, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 12, fontWeight: 600, color: "var(--text-strong)" }}
+              disabled={scanning}
+              style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 11px", borderRadius: 99, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 12, fontWeight: 600, color: "var(--text-strong)", opacity: scanning ? 0.7 : 1 }}
             >
-              Rescan
+              <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ animation: scanning ? "agSpin 0.7s linear infinite" : "none" }}>
+                <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.89" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                <path d="M13.5 2.5v3.2h-3.2" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              {scanning ? "Scanning…" : "Rescan"}
             </button>
           )}
         </div>
