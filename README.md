@@ -6,7 +6,7 @@
 
 This repository holds the **visual design** (a single interactive canvas covering all 37 mobile screens plus a dedicated desktop section), the **working backend** for the phases built so far, and a **real desktop app** (React UI rebuilt to match the actual design file pixel-for-pixel, running inside Electron with the Python backend spawned automatically, not a browser tab, not mockups).
 
-![Onboarding: splash, permissions, profile setup, and the live nearby-peers view](readme_hero_onboarding.png)
+![Onboarding: splash, permissions, profile setup, and the live nearby-peers view](assets/readme_hero_onboarding.png)
 
 ## Why "Agora"
 
@@ -20,9 +20,9 @@ Open [`index.html`](index.html) in any browser. It's a self-contained page (no b
 
 The plan is an Electron shell around this same design, talking to the local API (see Build status below): a full native-feeling window, not a resized phone screen:
 
-![Desktop onboarding: "Talk to who's around you," name/avatar setup, no account](readme_desktop_welcome.png)
+![Desktop onboarding: "Talk to who's around you," name/avatar setup, no account](assets/readme_desktop_welcome.png)
 
-![Desktop calls view with a live incoming-call toast, call history, and call-quality stats](readme_desktop_calls.png)
+![Desktop calls view with a live incoming-call toast, call history, and call-quality stats](assets/readme_desktop_calls.png)
 
 ## Run the backend
 
