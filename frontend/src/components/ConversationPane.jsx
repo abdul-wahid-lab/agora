@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, connectEvents } from "../api";
 import { paletteFor, initials } from "../lib/avatar";
+import SecurityGate from "./SecurityGate";
+import FileOpenActions from "./FileOpenActions";
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -53,6 +55,9 @@ export default function ConversationPane({ peer, onOpenCall }) {
   const [draft, setDraft] = useState("");
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [filePath, setFilePath] = useState("");
+  const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const hasNativePicker = Boolean(window.electronAPI?.pickFile);
+  const [gateFile, setGateFile] = useState(null);
   const bottomRef = useRef(null);
   const peerIdRef = useRef(peer?.peer_id);
   peerIdRef.current = peer?.peer_id;
@@ -122,11 +127,8 @@ export default function ConversationPane({ peer, onOpenCall }) {
     }
   }
 
-  async function handleSendFile() {
-    const path = filePath.trim();
+  async function sendFileAtPath(path) {
     if (!path) return;
-    setFilePickerOpen(false);
-    setFilePath("");
     try {
       await api.sendFile(peer.peer_id, path);
       setTimeout(() => api.files(peer.peer_id).then(setFiles).catch(() => {}), 400);
@@ -134,6 +136,35 @@ export default function ConversationPane({ peer, onOpenCall }) {
       // the composer's own error surface is intentionally minimal here;
       // FilesScreen has the fuller accept/decline/executable-warning flow
     }
+  }
+
+  function refreshFiles() {
+    api.files(peer.peer_id).then(setFiles).catch(() => {});
+  }
+
+  function handleAcceptClick(file) {
+    if (EXECUTABLE_EXTS.has((file.filename.split(".").pop() || "").toLowerCase())) {
+      setGateFile(file);
+    } else {
+      api.acceptFile(file.transfer_id).then(refreshFiles);
+    }
+  }
+
+  function handleDeclineClick(file) {
+    api.declineFile(file.transfer_id).then(refreshFiles);
+  }
+
+  async function handleSendFile() {
+    const path = filePath.trim();
+    setFilePickerOpen(false);
+    setFilePath("");
+    await sendFileAtPath(path);
+  }
+
+  async function handlePickFile(category) {
+    setAttachMenuOpen(false);
+    const path = await window.electronAPI.pickFile(category);
+    await sendFileAtPath(path);
   }
 
   const { bg, text } = paletteFor(peer.peer_id);
@@ -145,7 +176,7 @@ export default function ConversationPane({ peer, onOpenCall }) {
   let lastDay = null;
 
   return (
-    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", background: "var(--ground)" }}>
+    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", background: "var(--ground)", position: "relative" }}>
       <div style={{ flex: "0 0 auto", height: 62, borderBottom: "1px solid var(--divider)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 13, padding: "0 20px" }}>
         <span style={{ position: "relative", width: 38, height: 38, flexShrink: 0 }}>
           <span style={{ position: "absolute", inset: -3, borderRadius: 99, border: "2px solid var(--accent)", animation: "agRing 2.6s ease-out infinite" }} />
@@ -196,13 +227,34 @@ export default function ConversationPane({ peer, onOpenCall }) {
               {item.kind === "message" ? (
                 <MessageBubble msg={item.data} />
               ) : (
-                <FileBubble file={item.data} progress={progressByTransfer[item.data.transfer_id]} />
+                <FileBubble
+                  file={item.data}
+                  progress={progressByTransfer[item.data.transfer_id]}
+                  onAccept={() => handleAcceptClick(item.data)}
+                  onDecline={() => handleDeclineClick(item.data)}
+                />
               )}
             </div>
           );
         })}
         <div ref={bottomRef} />
       </div>
+
+      {gateFile && (
+        <SecurityGate
+          file={gateFile}
+          peerName={peer.name}
+          onClose={() => setGateFile(null)}
+          onAccept={() => {
+            api.acceptFile(gateFile.transfer_id).then(refreshFiles);
+            setGateFile(null);
+          }}
+          onDecline={() => {
+            api.declineFile(gateFile.transfer_id).then(refreshFiles);
+            setGateFile(null);
+          }}
+        />
+      )}
 
       {filePickerOpen && (
         <div style={{ padding: "0 20px 8px", display: "flex", gap: 8 }}>
@@ -223,9 +275,32 @@ export default function ConversationPane({ peer, onOpenCall }) {
         </div>
       )}
 
-      <div style={{ flex: "0 0 auto", padding: "12px 20px 16px", borderTop: "1px solid var(--divider)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 10 }}>
+      <div style={{ flex: "0 0 auto", padding: "12px 20px 16px", borderTop: "1px solid var(--divider)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 10, position: "relative" }}>
+        {attachMenuOpen && (
+          <div
+            style={{
+              position: "absolute",
+              bottom: "calc(100% + 8px)",
+              left: 20,
+              width: 200,
+              borderRadius: 14,
+              background: "var(--panel)",
+              border: "1px solid var(--border)",
+              boxShadow: "0 14px 32px rgba(20,14,10,0.18)",
+              padding: 6,
+              display: "flex",
+              flexDirection: "column",
+              gap: 2,
+              zIndex: 20,
+            }}
+          >
+            <AttachMenuItem label="Photos & Videos" onClick={() => handlePickFile("media")} />
+            <AttachMenuItem label="Document" onClick={() => handlePickFile("document")} />
+            <AttachMenuItem label="Any file" onClick={() => handlePickFile("any")} />
+          </div>
+        )}
         <button
-          onClick={() => setFilePickerOpen((v) => !v)}
+          onClick={() => (hasNativePicker ? setAttachMenuOpen((v) => !v) : setFilePickerOpen((v) => !v))}
           style={{ width: 38, height: 38, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "var(--text-muted)" }}
         >
           +
@@ -248,6 +323,19 @@ export default function ConversationPane({ peer, onOpenCall }) {
         </button>
       </div>
     </div>
+  );
+}
+
+function AttachMenuItem({ label, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{ textAlign: "left", padding: "9px 11px", borderRadius: 9, background: "transparent", border: "none", fontSize: 13.5, fontWeight: 500, color: "var(--text-strong)", cursor: "pointer" }}
+      onMouseEnter={(e) => (e.currentTarget.style.background = "var(--surface)")}
+      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+    >
+      {label}
+    </button>
   );
 }
 
@@ -288,11 +376,12 @@ function MessageBubble({ msg }) {
   );
 }
 
-function FileBubble({ file, progress }) {
+function FileBubble({ file, progress, onAccept, onDecline }) {
   const sent = file.direction === "sent";
   const { bg, text } = extStyle(file.filename);
   const isExecutable = EXECUTABLE_EXTS.has((file.filename.split(".").pop() || "").toLowerCase());
   const inProgress = file.status === "transferring" || file.status === "accepted";
+  const pending = !sent && file.status === "awaiting_accept";
 
   if (sent && inProgress) {
     const pct = Math.round((progress || 0) * 100);
@@ -328,19 +417,37 @@ function FileBubble({ file, progress }) {
           background: "var(--surface)",
           border: isExecutable ? "1.5px solid var(--danger)" : "1px solid var(--border-soft)",
           display: "flex",
-          alignItems: "center",
-          gap: 11,
+          flexDirection: "column",
+          gap: 10,
         }}
       >
-        <span style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 12, background: bg, display: "flex", alignItems: "center", justifyContent: "center", font: '600 9.5px/1 "IBM Plex Mono", monospace', color: text }}>
-          {(file.filename.split(".").pop() || "").slice(0, 3).toUpperCase()}
-        </span>
-        <div style={{ minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 14 }}>{file.filename}</div>
-          <div className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
-            {formatSize(file.size)} · {file.status}
+        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+          <span style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 12, background: bg, display: "flex", alignItems: "center", justifyContent: "center", font: '600 9.5px/1 "IBM Plex Mono", monospace', color: text }}>
+            {(file.filename.split(".").pop() || "").slice(0, 3).toUpperCase()}
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 7 }}>
+              {file.filename}
+              {isExecutable && (
+                <span style={{ padding: "2px 7px", borderRadius: 99, background: "#f9e3de", font: '600 9.5px/1.3 "Hanken Grotesk", sans-serif', color: "#a83f30", flexShrink: 0 }}>Installable</span>
+              )}
+            </div>
+            <div className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              {formatSize(file.size)} · {file.status}
+            </div>
           </div>
         </div>
+        {pending && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onDecline} style={{ flex: 1, padding: "8px 0", borderRadius: 10, background: "transparent", border: "1px solid var(--border)", color: "var(--text-muted)", fontSize: 12.5, fontWeight: 600 }}>
+              Decline
+            </button>
+            <button onClick={onAccept} style={{ flex: 1, padding: "8px 0", borderRadius: 10, background: "var(--accent)", border: "none", color: "#fff8f2", fontSize: 12.5, fontWeight: 700 }}>
+              Accept
+            </button>
+          </div>
+        )}
+        {file.saved_path && <FileOpenActions file={file} />}
       </div>
     </div>
   );

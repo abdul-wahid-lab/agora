@@ -16,6 +16,12 @@ contextBridge.exposeInMainWorld("electronAPI", {
   minimizeWindow: () => ipcRenderer.send("window:minimize"),
   maximizeWindow: () => ipcRenderer.send("window:maximize"),
   closeWindow: () => ipcRenderer.send("window:close"),
+  notifyIncomingCall: () => ipcRenderer.send("call:incoming"),
+  pickFile: (category) => ipcRenderer.invoke("dialog:pickFile", category),
+  setDeviceName: (name) => ipcRenderer.invoke("device:setName", name),
+  openFile: (filePath) => ipcRenderer.invoke("file:open", filePath),
+  showFileInFolder: (filePath) => ipcRenderer.invoke("file:showInFolder", filePath),
+  saveFileAs: (sourcePath, suggestedName) => ipcRenderer.invoke("file:saveAs", { sourcePath, suggestedName }),
 });
 
 // Tells api.js which port main.cjs actually spawned the backend on, so the

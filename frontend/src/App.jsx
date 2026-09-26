@@ -41,13 +41,14 @@ export default function App() {
     toggleCamera,
   } = useCall();
 
-  function finishOnboarding(chosenName) {
-    // NOTE: this doesn't actually rename the device on the network yet -
-    // device_name is fixed at backend startup via an env var, there's no
-    // PUT /me endpoint. Stored here so the UI has *something* to show;
-    // see BUILD_LOG.md's Step 2 known limitations.
+  async function finishOnboarding(chosenName) {
     localStorage.setItem("agora.chosenName", chosenName);
     localStorage.setItem(ONBOARDING_KEY, "1");
+    // Persists the name and restarts the backend under it (see main.cjs's
+    // device:setName) so peers actually see the name just typed here,
+    // instead of the OS username the backend started with by default. A
+    // no-op in a plain browser tab (no window.electronAPI there).
+    await window.electronAPI?.setDeviceName?.(chosenName);
     setOnboarded(true);
   }
 
