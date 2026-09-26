@@ -14,7 +14,7 @@ In ancient Greek city-states, the *agora* was the open public square: the place 
 
 ## View the design
 
-Open [`index.html`](index.html) in any browser. It's a self-contained page (no build step, no install).
+Open [`design/index.html`](design/index.html) in any browser. It's a self-contained page (no build step, no install).
 
 ## Desktop app design
 
