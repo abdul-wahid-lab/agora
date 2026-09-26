@@ -25,10 +25,11 @@
 // Dev mode still uses the venv directly, since freezing on every code
 // change would make local development painfully slow.
 
-const { app, BrowserWindow, ipcMain, screen } = require("electron");
+const { app, BrowserWindow, ipcMain, screen, dialog, shell } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
+const { randomUUID } = require("node:crypto");
 const { spawn } = require("node:child_process");
 
 const { API_PORT, P2P_PORT } = require("./config.cjs");
@@ -69,14 +70,44 @@ function frozenBackendExePath() {
   return path.join(backendDir(), "agora-backend.exe");
 }
 
+// This device's identity - a peer_id generated once and reused forever
+// (rather than a fresh random one every launch, which would make every
+// restart look like a brand-new, historyless contact to every peer that's
+// ever talked to this device), plus whatever display name onboarding set
+// (falls back to the OS username until onboarding has actually run once).
+function identityPath() {
+  return path.join(app.getPath("userData"), "identity.json");
+}
+
+function loadOrCreateIdentity() {
+  try {
+    return JSON.parse(fs.readFileSync(identityPath(), "utf8"));
+  } catch {
+    const identity = { peerId: randomUUID(), name: null };
+    saveIdentity(identity);
+    return identity;
+  }
+}
+
+function saveIdentity(identity) {
+  try {
+    fs.mkdirSync(path.dirname(identityPath()), { recursive: true });
+    fs.writeFileSync(identityPath(), JSON.stringify(identity));
+  } catch (e) {
+    logToFile(`failed to save identity: ${e.stack || e}`);
+  }
+}
+
 function startBackend() {
   const userData = app.getPath("userData");
   const downloadsDir = path.join(userData, "downloads");
   fs.mkdirSync(downloadsDir, { recursive: true });
 
+  const identity = loadOrCreateIdentity();
   const env = {
     ...process.env,
-    AGORA_NAME: os.userInfo().username || "agora-user",
+    AGORA_NAME: identity.name || os.userInfo().username || "agora-user",
+    AGORA_PEER_ID: identity.peerId,
     AGORA_PORT: String(P2P_PORT),
     AGORA_API_PORT: String(API_PORT),
     AGORA_DB: path.join(userData, "agora.db"),
@@ -103,19 +134,28 @@ function startBackend() {
     backendProcess = spawn(exe, [], { env, windowsHide: true });
   }
 
-  backendProcess.stdout.on("data", (d) => console.log(`[backend] ${d}`.trimEnd()));
-  backendProcess.stderr.on("data", (d) => console.error(`[backend] ${d}`.trimEnd()));
-  backendProcess.on("exit", (code) => {
+  const proc = backendProcess;
+  proc.stdout.on("data", (d) => console.log(`[backend] ${d}`.trimEnd()));
+  proc.stderr.on("data", (d) => console.error(`[backend] ${d}`.trimEnd()));
+  proc.on("exit", (code) => {
     console.log(`[electron] backend exited with code ${code}`);
-    backendProcess = null;
+    // Guard against a stale reference: if a rename (device:setName) already
+    // replaced backendProcess with a newer instance by the time this old
+    // one's exit event fires, don't null out that newer process.
+    if (backendProcess === proc) backendProcess = null;
   });
 }
 
+// Returns a promise resolving once the backend has actually exited (not just
+// been signaled to) - device:setName awaits this before respawning, since
+// starting a new instance while the old one still holds the port would fail.
 function stopBackend() {
-  if (backendProcess) {
-    backendProcess.kill();
-    backendProcess = null;
-  }
+  return new Promise((resolve) => {
+    const proc = backendProcess;
+    if (!proc) return resolve();
+    proc.once("exit", () => resolve());
+    proc.kill();
+  });
 }
 
 function createWindow() {
@@ -169,6 +209,71 @@ ipcMain.on("window:maximize", () => {
   else mainWindow.maximize();
 });
 ipcMain.on("window:close", () => mainWindow?.close());
+
+// WhatsApp/Zoom-style behavior: an incoming call brings the app to the
+// front on its own, rather than leaving it to a background OS notification
+// the user might not notice - the in-app CallOverlay toast (with real
+// Accept/Decline buttons) is only useful once the window is actually visible.
+ipcMain.on("call:incoming", () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+});
+
+// Category-filtered native file picker for the chat composer's "+" button -
+// returns an absolute path (or null if cancelled) instead of requiring the
+// user to type/paste one. See ConversationPane.jsx.
+const FILE_PICKER_FILTERS = {
+  media: [{ name: "Photos & Videos", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "mp4", "mov", "mkv", "avi"] }],
+  document: [{ name: "Documents", extensions: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf", "odt"] }],
+  any: [{ name: "All Files", extensions: ["*"] }],
+};
+// Onboarding calls this once a name is chosen. There's no live-rename path
+// in the backend (the mDNS TXT record and UDP announce payload are both
+// fixed at startup - see discovery.py), so this persists the name and
+// restarts the backend rather than trying to mutate it while running.
+ipcMain.handle("device:setName", async (_e, name) => {
+  const identity = loadOrCreateIdentity();
+  identity.name = name;
+  saveIdentity(identity);
+  await stopBackend();
+  startBackend();
+  return true;
+});
+
+ipcMain.handle("dialog:pickFile", async (_e, category) => {
+  if (!mainWindow) return null;
+  const filters = FILE_PICKER_FILTERS[category] || FILE_PICKER_FILTERS.any;
+  const result = await dialog.showOpenDialog(mainWindow, { properties: ["openFile"], filters });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+// Opens a received file with whatever the OS has registered for its type -
+// the same as double-clicking it in File Explorer. Returns "" on success or
+// an error string (shell.openPath never rejects, it resolves with the error).
+ipcMain.handle("file:open", async (_e, filePath) => shell.openPath(filePath));
+
+// Reveals the file in File Explorer with it pre-selected, for when someone
+// wants to see it in context (other files alongside it, etc.) rather than
+// open it immediately.
+ipcMain.handle("file:showInFolder", (_e, filePath) => {
+  shell.showItemInFolder(filePath);
+});
+
+// WhatsApp-style "save a copy where I want it" - Agora always downloads
+// received files into its own per-device folder first (so the accept/resume
+// flow has one predictable place to write to), but the user shouldn't be
+// stuck there; this copies the already-downloaded file out to wherever they
+// pick instead of forcing them to dig through the app's own data folder.
+ipcMain.handle("file:saveAs", async (_e, { sourcePath, suggestedName }) => {
+  if (!mainWindow) return null;
+  const result = await dialog.showSaveDialog(mainWindow, { defaultPath: suggestedName });
+  if (result.canceled || !result.filePath) return null;
+  await fs.promises.copyFile(sourcePath, result.filePath);
+  return result.filePath;
+});
 
 const gotLock = app.requestSingleInstanceLock();
 logToFile(`requestSingleInstanceLock() -> ${gotLock}`);

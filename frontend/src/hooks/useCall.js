@@ -109,6 +109,9 @@ export function useCall() {
         // as a separate event and clears `call` on its own.
         setCall({ callId: evt.call_id, peerId: evt.peer_id, media: evt.media, direction: "incoming", status: "ringing", offerSdp: evt.sdp });
         setError("");
+        // WhatsApp-style: bring the app window to the front on its own
+        // instead of relying on the user noticing a background OS toast.
+        window.electronAPI?.notifyIncomingCall?.();
       } else if (evt.type === "call_answered" && current?.callId === evt.call_id) {
         pcRef.current?.setRemoteDescription(evt.sdp).then(() => {
           setCall((c) => (c && c.callId === evt.call_id ? { ...c, status: "in_call" } : c));
@@ -200,10 +203,38 @@ export function useCall() {
     return pc;
   }
 
+  // Some Windows laptops expose a second "camera" purely for Windows Hello
+  // face login (infrared) alongside the real one - it enumerates like any
+  // other video device, but outside Hello's own IR-illuminated face-scan it
+  // just produces solid black. `getUserMedia({video: true})` with no device
+  // preference has no way to know that and can end up grabbing it first.
+  // Prefer whichever enumerated camera doesn't look IR-labeled; if there's
+  // only one camera, or labels aren't available yet, this is a no-op and
+  // falls back to the exact previous unconstrained behavior.
+  async function pickCameraDeviceId() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const cameras = devices.filter((d) => d.kind === "videoinput");
+      if (cameras.length <= 1) return undefined;
+      const nonIr = cameras.filter((d) => !/infrared|\bir\b|hello/i.test(d.label));
+      return (nonIr[0] || cameras[0]).deviceId || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  async function getLocalStream(media) {
+    const videoDeviceId = media === "video" ? await pickCameraDeviceId() : undefined;
+    return navigator.mediaDevices.getUserMedia({
+      audio: true,
+      video: media !== "video" ? false : videoDeviceId ? { deviceId: { exact: videoDeviceId } } : true,
+    });
+  }
+
   async function placeCall(peerId, media) {
     setError("");
     try {
-      const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: media === "video" });
+      const localStream = await getLocalStream(media);
       localStreamRef.current = localStream;
 
       const pc = setupPeerConnection(media);
@@ -232,7 +263,7 @@ export function useCall() {
     if (!incoming) return;
     setError("");
     try {
-      const localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: incoming.media === "video" });
+      const localStream = await getLocalStream(incoming.media);
       localStreamRef.current = localStream;
 
       const pc = setupPeerConnection(incoming.media);
