@@ -35,7 +35,7 @@ function summaryLine(call) {
 // buttons (see ConversationPane). This just reviews what already happened
 // and offers a one-click callback/redial.
 export default function CallsScreen({ onPlaceCall }) {
-  const peers = usePeers();
+  const { peers } = usePeers();
   const [history, setHistory] = useState([]);
   const [filter, setFilter] = useState("all");
 

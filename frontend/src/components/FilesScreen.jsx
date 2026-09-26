@@ -44,7 +44,7 @@ function formatWhen(ts) {
 // before it'll even reveal the file, matching the design's own copy and
 // timing exactly.
 export default function FilesScreen() {
-  const peers = usePeers();
+  const { peers } = usePeers();
   const [files, setFiles] = useState([]);
   const [category, setCategory] = useState("all"); // all | received | sent | peer:<id>
   const [typeFilter, setTypeFilter] = useState("All");

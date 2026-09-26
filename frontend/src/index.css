@@ -75,3 +75,10 @@ button {
   0%, 49% { opacity: 1; }
   50%, 100% { opacity: 0; }
 }
+/* Rescan button's icon while a refresh is in flight - the standard
+   rotating-arrow "working" signifier (Chrome's reload button, most
+   refresh icons everywhere), not one of the presence-pulse motifs above
+   since this means "doing something" rather than "someone is here." */
+@keyframes agSpin {
+  to { transform: rotate(360deg); }
+}
