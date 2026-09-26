@@ -41,6 +41,12 @@ CREATE TABLE IF NOT EXISTS files (
 );
 CREATE INDEX IF NOT EXISTS idx_files_peer ON files(peer_id, ts);
 
+CREATE TABLE IF NOT EXISTS known_peers (
+    peer_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    last_seen REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS calls (
     call_id TEXT PRIMARY KEY,
     peer_id TEXT NOT NULL,
@@ -228,25 +234,48 @@ class MessageStore:
         """One row per peer we've ever exchanged a message with, each
         carrying its own most recent message - what the Chats list actually
         needs (distinct from `history`, which is one peer's full thread).
-        Ordered by recency so the list reads like a real chat app's."""
+        Ordered by recency so the list reads like a real chat app's.
+
+        Includes the peer's last-known display name from `known_peers` (see
+        `save_known_peer`) so a conversation still shows a real name after
+        that peer goes offline, instead of the UI having nothing to show but
+        a bare peer_id once it's no longer in the live discovery list."""
 
         def _op(conn: sqlite3.Connection) -> list[dict]:
             rows = conn.execute(
                 """
-                SELECT m.peer_id, m.body, m.direction, m.status, m.ts
+                SELECT m.peer_id, m.body, m.direction, m.status, m.ts, k.name
                 FROM messages m
                 INNER JOIN (
                     SELECT peer_id, MAX(ts) AS max_ts FROM messages GROUP BY peer_id
                 ) latest ON m.peer_id = latest.peer_id AND m.ts = latest.max_ts
+                LEFT JOIN known_peers k ON k.peer_id = m.peer_id
                 ORDER BY m.ts DESC
                 """
             ).fetchall()
             return [
-                {"peer_id": r[0], "last_body": r[1], "last_direction": r[2], "last_status": r[3], "last_ts": r[4]}
+                {"peer_id": r[0], "last_body": r[1], "last_direction": r[2], "last_status": r[3], "last_ts": r[4], "name": r[5]}
                 for r in rows
             ]
 
         return await asyncio.to_thread(self._run, _op)
+
+    async def save_known_peer(self, peer_id: str, name: str, ts: Optional[float] = None) -> None:
+        """Remembers a peer's display name beyond its current live session -
+        discovery.py's registry is purely in-memory and forgets a peer the
+        moment it drops off the network, which would otherwise mean a
+        conversation's name reverting to "Unknown" as soon as the other
+        person closes their laptop."""
+        ts = ts if ts is not None else time.time()
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute(
+                "INSERT OR REPLACE INTO known_peers (peer_id, name, last_seen) VALUES (?, ?, ?)",
+                (peer_id, name, ts),
+            )
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
 
     async def save_call_start(self, call_id: str, peer_id: str, direction: str, media: str, started_at: Optional[float] = None) -> None:
         started_at = started_at if started_at is not None else time.time()

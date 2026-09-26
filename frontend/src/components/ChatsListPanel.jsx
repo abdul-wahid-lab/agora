@@ -1,5 +1,3 @@
-import { useEffect, useState } from "react";
-import { api, connectEvents } from "../api";
 import { paletteFor, initials } from "../lib/avatar";
 
 function fmtPreview(body, direction) {
@@ -11,32 +9,12 @@ function fmtPreview(body, direction) {
 // sorted by recency, each row showing the last message. The "+" button is
 // a stub for now - group creation needs backend support that doesn't exist
 // yet (see BUILD_LOG).
-export default function ChatsListPanel({ peers, selected, onSelect }) {
-  const [conversations, setConversations] = useState([]);
-
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      try {
-        const list = await api.conversations();
-        if (!cancelled) setConversations(list);
-      } catch {
-        // ignore - next poll/event retries
-      }
-    }
-    load();
-    const interval = setInterval(load, 3000);
-    const stop = connectEvents((evt) => {
-      if (evt.type === "message") load();
-    });
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-      stop();
-    };
-  }, []);
-
-  const peerName = (peerId) => peers.find((p) => p.peer_id === peerId)?.name || "Unknown";
+//
+// `conversations` carries its own persisted `name` per peer (from the
+// backend's known_peers table - see storage.py), rather than looking one up
+// in the live `peers` list, so a conversation still shows a real name after
+// that peer goes offline instead of falling back to "Unknown".
+export default function ChatsListPanel({ conversations, selected, onSelect }) {
 
   return (
     <div style={{ width: 300, flex: "0 0 auto", borderRight: "1px solid var(--divider)", background: "var(--panel)", display: "flex", flexDirection: "column", padding: "18px 14px", gap: 10 }}>
@@ -93,10 +71,10 @@ export default function ChatsListPanel({ peers, selected, onSelect }) {
                   fontWeight: 600,
                 }}
               >
-                {initials(peerName(c.peer_id))}
+                {initials(c.name || "Unknown")}
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{peerName(c.peer_id)}</div>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name || "Unknown"}</div>
                 <div style={{ fontSize: 11.5, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {fmtPreview(c.last_body, c.last_direction)}
                 </div>

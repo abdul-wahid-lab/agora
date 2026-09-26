@@ -25,6 +25,19 @@ stale entries pile up.
   minimum 500ms visible duration so the animation is perceptible even though
   a LAN fetch usually resolves in milliseconds.
 
+- [x] **A conversation with an offline peer showed "Unknown" and couldn't be
+  opened at all** (found 2026-09-26, testing chat history persistence). Two
+  causes, both fixed: the backend never persisted a peer's name anywhere
+  except the live, memory-only discovery registry, which forgets someone the
+  instant they go offline (fixed with a new `known_peers` table in
+  `storage.py`, populated by `api.py`'s `_watch_peers` loop, joined into
+  `GET /conversations`); and `App.jsx`'s `selectedPeer` only ever looked in
+  the live `peers` list, so `ConversationPane` had nothing to render for
+  anyone not currently online (fixed with a fallback synthetic peer object
+  built from the conversation's own persisted name, plus an `online` flag
+  threaded into `ConversationPane`/`InfoSidebar` to gray out Call/Video and
+  show "not on this network" instead of stale/blank connection info).
+
 ## Dead UI elements (found during the 2026-09-26 two-device test)
 
 - [ ] **The top menu bar ("Agora File Conversation Network View Help") is

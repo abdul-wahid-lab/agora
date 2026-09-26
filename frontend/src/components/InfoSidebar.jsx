@@ -19,7 +19,7 @@ const EXT_STYLE = {
 // fabricated network telemetry (latency/link/route); rather than invent
 // numbers we don't measure, this shows what discovery genuinely knows about
 // the connection (its transport and address) - real over fake.
-export default function InfoSidebar({ peer }) {
+export default function InfoSidebar({ peer, online = true }) {
   const [files, setFiles] = useState([]);
 
   useEffect(() => {
@@ -57,20 +57,26 @@ export default function InfoSidebar({ peer }) {
           {peer.name}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: 99, background: "var(--surface-2)" }}>
-          <span style={{ width: 6, height: 6, borderRadius: 99, background: "var(--accent)" }} />
-          <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-strong)" }}>{peer.address}</span>
+          <span style={{ width: 6, height: 6, borderRadius: 99, background: online ? "var(--accent)" : "var(--text-3)" }} />
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-strong)" }}>{online ? peer.address : "Not on this network"}</span>
         </div>
       </div>
 
       <div style={{ padding: "13px 14px", borderRadius: 16, background: "var(--surface-2)", display: "flex", flexDirection: "column", gap: 9 }}>
         <div style={{ font: '600 10.5px/1 "IBM Plex Mono", monospace', letterSpacing: "0.1em", color: "var(--text-3)" }}>CONNECTION</div>
-        <div className="mono" style={{ fontSize: 11.5, lineHeight: 1.7, color: "var(--text-2)" }}>
-          address &nbsp;{peer.address}:{peer.port}
-          <br />
-          via &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{peer.source}
-          <br />
-          route &nbsp;&nbsp;&nbsp;direct, no relay
-        </div>
+        {online ? (
+          <div className="mono" style={{ fontSize: 11.5, lineHeight: 1.7, color: "var(--text-2)" }}>
+            address &nbsp;{peer.address}:{peer.port}
+            <br />
+            via &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{peer.source}
+            <br />
+            route &nbsp;&nbsp;&nbsp;direct, no relay
+          </div>
+        ) : (
+          <div className="mono" style={{ fontSize: 11.5, lineHeight: 1.7, color: "var(--text-2)" }}>
+            Not seen on this network right now. Showing saved chat history only.
+          </div>
+        )}
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>

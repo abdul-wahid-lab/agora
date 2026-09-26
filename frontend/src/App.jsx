@@ -13,6 +13,7 @@ import Onboarding from "./components/Onboarding";
 import { api } from "./api";
 import { useCall } from "./hooks/useCall";
 import { usePeers } from "./hooks/usePeers";
+import { useConversations } from "./hooks/useConversations";
 
 const ONBOARDING_KEY = "agora.onboarded";
 
@@ -24,6 +25,7 @@ export default function App() {
   const [peerCount, setPeerCount] = useState(0);
   const [connected, setConnected] = useState(false);
   const { peers, refreshing: rescanning, refresh: rescan } = usePeers();
+  const conversations = useConversations();
   const {
     call,
     error: callError,
@@ -77,7 +79,17 @@ export default function App() {
     return <Onboarding onComplete={finishOnboarding} />;
   }
 
-  const selectedPeer = peers.find((p) => p.peer_id === selectedPeerId) || null;
+  // A peer with chat history isn't necessarily online right now - discovery's
+  // live list (`peers`) forgets someone the instant they drop off the LAN,
+  // but their conversation and its history are still sitting in local
+  // storage and should stay openable. Fall back to a synthetic peer object
+  // (built from the conversation's own persisted name, see storage.py's
+  // known_peers table) so ConversationPane always has something to render
+  // instead of silently refusing to open at all.
+  const livePeer = peers.find((p) => p.peer_id === selectedPeerId) || null;
+  const offlineConversation = !livePeer && selectedPeerId ? conversations.find((c) => c.peer_id === selectedPeerId) : null;
+  const selectedPeer = livePeer || (offlineConversation ? { peer_id: selectedPeerId, name: offlineConversation.name || "Unknown" } : null);
+  const selectedPeerOnline = Boolean(livePeer);
 
   function handleSelectTab(tab) {
     setActive(tab);
@@ -97,16 +109,16 @@ export default function App() {
         {active === "nearby" && (
           <>
             <PeerList peers={peers} selected={selectedPeerId} onSelect={setSelectedPeerId} onRescan={rescan} scanning={rescanning} />
-            <ConversationPane peer={selectedPeer} onOpenCall={handleOpenCall} />
-            <InfoSidebar peer={selectedPeer} />
+            <ConversationPane peer={selectedPeer} online={selectedPeerOnline} onOpenCall={handleOpenCall} />
+            <InfoSidebar peer={selectedPeer} online={selectedPeerOnline} />
           </>
         )}
 
         {active === "chats" && (
           <>
-            <ChatsListPanel peers={peers} selected={selectedPeerId} onSelect={setSelectedPeerId} />
-            <ConversationPane peer={selectedPeer} onOpenCall={handleOpenCall} />
-            <InfoSidebar peer={selectedPeer} />
+            <ChatsListPanel conversations={conversations} selected={selectedPeerId} onSelect={setSelectedPeerId} />
+            <ConversationPane peer={selectedPeer} online={selectedPeerOnline} onOpenCall={handleOpenCall} />
+            <InfoSidebar peer={selectedPeer} online={selectedPeerOnline} />
           </>
         )}
 
