@@ -48,7 +48,7 @@ function collapseSentCopies(files) {
 // machinery (all already generic, none of it was actually 1:1-specific),
 // group chat only adds the sender-name label and the sent-copy collapsing
 // above - no new transfer protocol, no new safety logic.
-export default function GroupConversationPane({ group, onlineCount, onStartCall, me, livePeers = [], otherGroups = [] }) {
+export default function GroupConversationPane({ group, onlineCount, onStartCall, me, livePeers = [], conversations = [], otherGroups = [] }) {
   const [messages, setMessages] = useState([]);
   const [files, setFiles] = useState([]);
   const [draft, setDraft] = useState("");
@@ -178,15 +178,17 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
     api.deleteGroupMessage(group.group_id, msg.msg_id, { everyone }).catch(() => {});
   }
 
-  // Everyone else on this network plus every other group this device is
-  // in - same shape and same "no currently-offline peer listed" reasoning
-  // as ConversationPane's own forwardCandidates, just also excluding this
-  // group itself (forwarding a message back into its own timeline isn't a
-  // real action).
-  const forwardCandidates = [
-    ...livePeers.map((p) => ({ id: p.peer_id, name: p.name, kind: "peer" })),
-    ...otherGroups.map((g) => ({ id: g.group_id, name: g.name, kind: "group" })),
-  ];
+  // Everyone this device has ever talked to or can currently see, plus
+  // every other group this device is in (excluding this group itself,
+  // forwarding a message back into its own timeline isn't a real action).
+  // Offline peers are included on purpose, same reasoning as
+  // ConversationPane's own forwardCandidates: forwarding just calls the
+  // same api.sendMessage()/sendFile() the plain composer already uses,
+  // which already queues for an offline peer and delivers automatically.
+  const peerCandidates = new Map();
+  for (const c of conversations) peerCandidates.set(c.peer_id, { id: c.peer_id, name: c.name || "Unknown", kind: "peer" });
+  for (const p of livePeers) peerCandidates.set(p.peer_id, { id: p.peer_id, name: p.name, kind: "peer" });
+  const forwardCandidates = [...peerCandidates.values(), ...otherGroups.map((g) => ({ id: g.group_id, name: g.name, kind: "group" }))];
 
   function handleForwardMessage(msg, target) {
     if (target.kind === "group") api.sendGroupMessage(target.id, msg.body).catch(() => {});
