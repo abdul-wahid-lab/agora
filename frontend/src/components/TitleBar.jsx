@@ -249,7 +249,11 @@ export default function TitleBar({
 
   return (
     <div style={titleBarBaseStyle}>
-      <img src="/logo.png" alt="Agora" style={{ height: 22, width: 22, objectFit: "contain", flexShrink: 0, marginRight: 4 }} />
+      {/* Relative path, not "/logo.png" - the packaged app loads index.html
+          via file://, where an absolute root path resolves to the real
+          filesystem root, not this app's own dist folder. Matches
+          vite.config.js's own base: "./" already used for JS/CSS assets. */}
+      <img src="./logo.png" alt="Agora" style={{ height: 22, width: 22, objectFit: "contain", flexShrink: 0, marginRight: 4 }} />
       <div style={{ display: "flex", gap: 18, fontSize: 13, color: "var(--text-strong)", fontWeight: 500 }}>
         <DropdownMenu label="File" items={fileItems} />
         <DropdownMenu label="Conversation" items={conversationItems} />
