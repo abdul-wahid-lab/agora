@@ -32,6 +32,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.calling import CallService, CallState
+from app.deletion import DeleteService
 from app.discovery import PeerDiscovery
 from app.filetransfer import FileTransferService, IncomingFileOffer
 from app.messaging import IncomingMessage, MessagingService
@@ -133,6 +134,14 @@ def _on_collision_yield(call_id: str) -> None:
     asyncio.create_task(_broadcast({"type": "call_ended", "call_id": call_id, "reason": "collision"}))
 
 
+def _on_remote_delete(peer_id: str, msg_id: str) -> None:
+    # A peer told us they deleted a message for everyone - already removed
+    # from our own store by DeleteService by the time this fires, this just
+    # lets an already-open chat window drop it live instead of waiting for
+    # the next history poll.
+    asyncio.create_task(_broadcast({"type": "message_deleted", "peer_id": peer_id, "msg_id": msg_id}))
+
+
 messaging = MessagingService(discovery, store, on_message=_on_message)
 file_transfer = FileTransferService(
     discovery,
@@ -157,6 +166,7 @@ calling = CallService(
     on_call_ended=_on_call_ended,
     on_collision_yield=_on_collision_yield,
 )
+deletion = DeleteService(discovery, messaging, store, on_remote_delete=_on_remote_delete)
 
 _peer_watch_task: Optional[asyncio.Task] = None
 
@@ -188,6 +198,7 @@ async def startup() -> None:
     # and deadlocks trying to schedule its own coroutines on it.
     await asyncio.to_thread(discovery.start)
     await messaging.start()
+    await deletion.start()
     _peer_watch_task = asyncio.create_task(_watch_peers())
 
 
@@ -195,6 +206,7 @@ async def startup() -> None:
 async def shutdown() -> None:
     if _peer_watch_task:
         _peer_watch_task.cancel()
+    await deletion.stop()
     await messaging.stop()
     discovery.stop()
 
@@ -227,6 +239,28 @@ async def send_message(body: SendMessageBody):
 async def get_history(peer_id: str, limit: int = 50):
     history = await store.history(peer_id, limit=limit)
     return [{"msg_id": m.msg_id, "direction": m.direction, "body": m.body, "status": m.status, "ts": m.ts} for m in history]
+
+
+@app.delete("/messages/{msg_id}")
+async def delete_message(msg_id: str, everyone: bool = False, peer_id: Optional[str] = None):
+    """Plain 'delete for me': removes only this device's own copy, nothing
+    goes over the wire. With `everyone=true` (and `peer_id`, needed to know
+    who to notify - the frontend always already has it in context), also
+    best-effort tells the peer to remove their copy too, see deletion.py."""
+    if everyone and peer_id:
+        await deletion.delete_for_everyone(peer_id, msg_id)
+    else:
+        await store.delete_message(msg_id)
+    return {"status": "deleted"}
+
+
+@app.delete("/conversations/{peer_id}")
+async def clear_conversation(peer_id: str):
+    """Wipes this peer's whole message history on this device. Leaves the
+    remembered peer name and any downloaded files alone, see
+    storage.py's clear_conversation docstring for why."""
+    await store.clear_conversation(peer_id)
+    return {"status": "cleared"}
 
 
 @app.get("/conversations")
@@ -380,6 +414,15 @@ async def get_all_call_history(limit: int = 100):
         }
         for r in records
     ]
+
+
+@app.delete("/calls/history")
+async def clear_call_history():
+    """Wipes the entire call log. The Calls tab is one flat list across all
+    peers, not scoped per-peer, so this clears all of it, not one peer at a
+    time - see storage.py's clear_all_calls docstring."""
+    await store.clear_all_calls()
+    return {"status": "cleared"}
 
 
 @app.get("/calls/history/{peer_id}")

@@ -10,6 +10,7 @@ import CallsScreen from "./components/CallsScreen";
 import CallOverlay from "./components/CallOverlay";
 import FilesScreen from "./components/FilesScreen";
 import Onboarding from "./components/Onboarding";
+import ScanRadar from "./components/ScanRadar";
 import { api } from "./api";
 import { useCall } from "./hooks/useCall";
 import { usePeers } from "./hooks/usePeers";
@@ -109,7 +110,7 @@ export default function App() {
         {active === "nearby" && (
           <>
             <PeerList peers={peers} selected={selectedPeerId} onSelect={setSelectedPeerId} onRescan={rescan} scanning={rescanning} />
-            <ConversationPane peer={selectedPeer} online={selectedPeerOnline} onOpenCall={handleOpenCall} />
+            <ConversationPane peer={selectedPeer} online={selectedPeerOnline} onOpenCall={handleOpenCall} emptyState={<ScanRadar peers={peers} />} />
             <InfoSidebar peer={selectedPeer} online={selectedPeerOnline} />
           </>
         )}

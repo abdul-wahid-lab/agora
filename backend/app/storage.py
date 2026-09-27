@@ -58,6 +58,12 @@ CREATE TABLE IF NOT EXISTS calls (
     duration REAL              -- seconds actually connected (in_call), not total ring time
 );
 CREATE INDEX IF NOT EXISTS idx_calls_peer ON calls(peer_id, started_at);
+
+CREATE TABLE IF NOT EXISTS pending_deletes (
+    msg_id TEXT PRIMARY KEY,
+    peer_id TEXT NOT NULL,
+    ts REAL NOT NULL
+);
 """
 
 
@@ -325,6 +331,72 @@ class MessageStore:
                 (peer_id, limit),
             ).fetchall()
             return [CallRecord(*row) for row in rows]
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def delete_message(self, msg_id: str) -> None:
+        """'Delete for me': removes this device's own local copy of one
+        message. Purely local, no wire protocol involved - the other side's
+        copy (if any) is untouched."""
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM messages WHERE msg_id = ?", (msg_id,))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def clear_conversation(self, peer_id: str) -> None:
+        """Wipes every message with one peer - a whole-thread 'clear chat'.
+        Deliberately leaves `known_peers` (their remembered name) and `files`
+        (the actual downloaded bytes on disk) untouched: wiping the name
+        would resurrect the old "Unknown" bug for a peer who's currently
+        offline, and file records point at real bytes a user may still want
+        even after clearing the text history."""
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM messages WHERE peer_id = ?", (peer_id,))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def clear_all_calls(self) -> None:
+        """Wipes the entire call history. The Calls tab is one flat list
+        across every peer (no per-peer view exists in the UI), so this
+        mirrors that shape rather than clearing one peer at a time."""
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM calls")
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def save_pending_delete(self, msg_id: str, peer_id: str, ts: Optional[float] = None) -> None:
+        """Remembers a 'delete for everyone' that couldn't reach the peer
+        yet (they were offline), so deletion.py's flush loop can retry it
+        the same way messaging.py's _flush_pending_loop retries a held
+        chat message - same guarantee, same shape, different table."""
+        ts = ts if ts is not None else time.time()
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_deletes (msg_id, peer_id, ts) VALUES (?, ?, ?)",
+                (msg_id, peer_id, ts),
+            )
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def remove_pending_delete(self, msg_id: str) -> None:
+        def _op(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM pending_deletes WHERE msg_id = ?", (msg_id,))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def pending_deletes_for_peer(self, peer_id: str) -> list[str]:
+        def _op(conn: sqlite3.Connection) -> list[str]:
+            rows = conn.execute("SELECT msg_id FROM pending_deletes WHERE peer_id = ?", (peer_id,)).fetchall()
+            return [r[0] for r in rows]
 
         return await asyncio.to_thread(self._run, _op)
 

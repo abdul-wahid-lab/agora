@@ -48,7 +48,7 @@ const EXECUTABLE_EXTS = new Set(["apk", "exe", "msi", "bat", "cmd", "com", "sh",
 // stores (see storage.py) but read as one timeline here, sorted by time -
 // that interleaving is what the design shows, even though the underlying
 // APIs stay separate.
-export default function ConversationPane({ peer, online = true, onOpenCall }) {
+export default function ConversationPane({ peer, online = true, onOpenCall, emptyState }) {
   const [messages, setMessages] = useState([]);
   const [files, setFiles] = useState([]);
   const [progressByTransfer, setProgressByTransfer] = useState({});
@@ -58,6 +58,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall }) {
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const hasNativePicker = Boolean(window.electronAPI?.pickFile);
   const [gateFile, setGateFile] = useState(null);
+  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const bottomRef = useRef(null);
   const peerIdRef = useRef(peer?.peer_id);
   peerIdRef.current = peer?.peer_id;
@@ -90,6 +91,9 @@ export default function ConversationPane({ peer, online = true, onOpenCall }) {
       if (evt.type === "message" && evt.peer_id === current) {
         setMessages((prev) => [...prev, { msg_id: `live-${evt.ts}`, direction: "received", body: evt.body, status: "received", ts: evt.ts }]);
       }
+      if (evt.type === "message_deleted" && evt.peer_id === current) {
+        setMessages((prev) => prev.filter((m) => m.msg_id !== evt.msg_id));
+      }
       if (evt.type === "file_progress") {
         setProgressByTransfer((prev) => ({ ...prev, [evt.transfer_id]: evt.bytes_sent / evt.total }));
       }
@@ -105,6 +109,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall }) {
   }, [messages, files]);
 
   if (!peer) {
+    if (emptyState) return emptyState;
     return (
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)" }}>
         <p className="serif" style={{ fontSize: 22 }}>
@@ -125,6 +130,40 @@ export default function ConversationPane({ peer, online = true, onOpenCall }) {
     } catch {
       setMessages((prev) => prev.map((m) => (m.msg_id === optimistic.msg_id ? { ...m, status: "failed" } : m)));
     }
+  }
+
+  // A "failed" message never reached the backend (the POST itself threw),
+  // so there's no msg_id to retry against server-side - this just re-runs
+  // the same send against the same local optimistic entry. If it works this
+  // time, the next history poll replaces it with the real persisted message
+  // from the backend, same as a normal send.
+  async function handleRetryMessage(msg) {
+    setMessages((prev) => prev.map((m) => (m.msg_id === msg.msg_id ? { ...m, status: "pending" } : m)));
+    try {
+      await api.sendMessage(peer.peer_id, msg.body);
+    } catch {
+      setMessages((prev) => prev.map((m) => (m.msg_id === msg.msg_id ? { ...m, status: "failed" } : m)));
+    }
+  }
+
+  // "Delete for me": local-only removal of this device's own copy, nothing
+  // goes over the wire. "Delete for everyone" (only ever offered on a
+  // message you sent) also best-effort notifies the peer - if they're
+  // offline right now the backend queues it and delivers automatically once
+  // they reappear (deletion.py's flush loop), same guarantee a normal chat
+  // message already has. Optimistic removal from local state either way -
+  // if the DELETE somehow fails, the next history poll (2.5s) just brings
+  // it back rather than the UI silently lying about the outcome.
+  function handleDeleteMessage(msg, everyone = false) {
+    setMessages((prev) => prev.filter((m) => m.msg_id !== msg.msg_id));
+    api.deleteMessage(msg.msg_id, { everyone, peerId: peer.peer_id }).catch(() => {});
+  }
+
+  function handleClearConversation() {
+    setHeaderMenuOpen(false);
+    if (!window.confirm(`Clear your entire chat history with ${peer.name}? This only clears it on this device, it can't be undone.`)) return;
+    setMessages([]);
+    api.clearConversation(peer.peer_id).catch(() => {});
   }
 
   async function sendFileAtPath(path) {
@@ -152,6 +191,16 @@ export default function ConversationPane({ peer, online = true, onOpenCall }) {
 
   function handleDeclineClick(file) {
     api.declineFile(file.transfer_id).then(refreshFiles);
+  }
+
+  function handleRetryClick(file) {
+    // Fire-and-forget on the backend (see api.py's resend_file): it kicks
+    // off a background task and returns immediately, so there's no direct
+    // success/failure to await here. If the retry actually works, the next
+    // poll of refreshFiles picks up "transferring" -> "completed"; if the
+    // original file path is gone (backend restarted since it was first
+    // sent), it silently stays "failed" and the button is just still there.
+    api.resendFile(file.transfer_id).then(refreshFiles).catch(() => {});
   }
 
   async function handleSendFile() {
@@ -203,9 +252,24 @@ export default function ConversationPane({ peer, online = true, onOpenCall }) {
           <button onClick={() => onOpenCall(peer.peer_id, "video")} disabled={!online} title={online ? undefined : "Not reachable right now"} style={{ ...pillButtonStyle, opacity: online ? 1 : 0.5 }}>
             Video
           </button>
-          <button style={{ width: 34, height: 34, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, color: "var(--text-muted)" }}>
-            ⋯
-          </button>
+          <div style={{ position: "relative" }}>
+            <button
+              onClick={() => setHeaderMenuOpen((v) => !v)}
+              style={{ width: 34, height: 34, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, color: "var(--text-muted)" }}
+            >
+              ⋯
+            </button>
+            {headerMenuOpen && (
+              <div style={{ position: "absolute", top: 40, right: 0, zIndex: 20, minWidth: 200, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow)", padding: 6 }}>
+                <button
+                  onClick={handleClearConversation}
+                  style={{ width: "100%", textAlign: "left", padding: "9px 11px", borderRadius: 9, background: "transparent", border: "none", fontSize: 13, fontWeight: 600, color: "var(--danger)" }}
+                >
+                  Clear chat history
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -227,13 +291,14 @@ export default function ConversationPane({ peer, online = true, onOpenCall }) {
                 </div>
               )}
               {item.kind === "message" ? (
-                <MessageBubble msg={item.data} />
+                <MessageBubble msg={item.data} onRetry={() => handleRetryMessage(item.data)} onDelete={(everyone) => handleDeleteMessage(item.data, everyone)} />
               ) : (
                 <FileBubble
                   file={item.data}
                   progress={progressByTransfer[item.data.transfer_id]}
                   onAccept={() => handleAcceptClick(item.data)}
                   onDecline={() => handleDeclineClick(item.data)}
+                  onRetry={() => handleRetryClick(item.data)}
                 />
               )}
             </div>
@@ -313,7 +378,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall }) {
           onKeyDown={(e) => {
             if (e.key === "Enter") handleSend();
           }}
-          placeholder={`Message ${peer.name} — or drop a file anywhere in this window`}
+          placeholder={`Message ${peer.name}, or drop a file anywhere in this window`}
           style={{ flex: 1, height: 42, borderRadius: 14, border: "1px solid var(--border)", padding: "0 15px", fontSize: 14 }}
         />
         <button
@@ -351,39 +416,127 @@ const pillButtonStyle = {
   color: "var(--text-strong)",
 };
 
-function MessageBubble({ msg }) {
+function MessageBubble({ msg, onRetry, onDelete }) {
   const sent = msg.direction === "sent";
+  const failed = msg.status === "failed";
+  const [menuOpen, setMenuOpen] = useState(false);
+  // Messages fresh off a live WS event, or an optimistic just-sent bubble,
+  // only have a synthetic local id ("live-"/"pending-") - the real
+  // backend msg_id isn't in that event payload at all (see messaging.py's
+  // "message" broadcast). Deleting against a synthetic id would delete
+  // nothing server-side, and the real row would just reappear on the next
+  // history poll, so the delete affordance only shows once this message
+  // has a real id (within ~2.5s, after the next poll picks it up).
+  const isSynthetic = msg.msg_id.startsWith("live-") || msg.msg_id.startsWith("pending-");
+
+  const deleteButton = !isSynthetic && (
+    <div style={{ position: "relative" }}>
+      <button onClick={() => setMenuOpen((v) => !v)} title="Delete" style={deleteGlyphStyle}>
+        🗑
+      </button>
+      {menuOpen && (
+        <div
+          style={{
+            position: "absolute",
+            top: 24,
+            [sent ? "right" : "left"]: 0,
+            zIndex: 20,
+            minWidth: 168,
+            borderRadius: 12,
+            background: "var(--surface)",
+            border: "1px solid var(--border-soft)",
+            boxShadow: "var(--shadow)",
+            padding: 6,
+          }}
+        >
+          <button
+            onClick={() => {
+              setMenuOpen(false);
+              onDelete(false);
+            }}
+            style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, background: "transparent", border: "none", fontSize: 12.5, fontWeight: 600, color: "var(--text-strong)" }}
+          >
+            Delete for me
+          </button>
+          {/* Only ever offered on your own sent message - deleting someone
+              else's message "for everyone" would mean telling them to
+              delete something from their own device, not a real feature. */}
+          {sent && (
+            <button
+              onClick={() => {
+                setMenuOpen(false);
+                onDelete(true);
+              }}
+              style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, background: "transparent", border: "none", fontSize: 12.5, fontWeight: 600, color: "var(--danger)" }}
+            >
+              Delete for everyone
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: sent ? "flex-end" : "flex-start", gap: 4, maxWidth: "58%", alignSelf: sent ? "flex-end" : "flex-start" }}>
-      <div
-        style={{
-          padding: "11px 15px",
-          borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
-          background: sent ? "var(--accent)" : "var(--surface)",
-          border: sent ? "none" : "1px solid var(--border-soft)",
-          color: sent ? "#fff8f2" : "var(--text)",
-          fontSize: 14.5,
-          lineHeight: 1.45,
-          wordBreak: "break-word",
-        }}
-      >
-        {msg.body}
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
+        {!sent && deleteButton}
+        <div
+          style={{
+            padding: "11px 15px",
+            borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
+            background: sent ? "var(--accent)" : "var(--surface)",
+            border: sent ? "none" : "1px solid var(--border-soft)",
+            color: sent ? "#fff8f2" : "var(--text)",
+            fontSize: 14.5,
+            lineHeight: 1.45,
+            wordBreak: "break-word",
+          }}
+        >
+          {msg.body}
+        </div>
+        {sent && deleteButton}
       </div>
-      {sent && (
+      {sent && !failed && (
         <div style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 500 }}>
           {statusGlyph(msg.status)} {msg.status === "delivered" ? "Seen" : ""}
         </div>
+      )}
+      {sent && failed && (
+        <button
+          onClick={onRetry}
+          style={{ display: "flex", alignItems: "center", gap: 5, background: "none", border: "none", padding: 0, fontSize: 11, fontWeight: 700, color: "var(--danger)" }}
+          title="Message failed to send. Click to retry."
+        >
+          ! Failed, tap to retry
+        </button>
       )}
     </div>
   );
 }
 
-function FileBubble({ file, progress, onAccept, onDecline }) {
+const deleteGlyphStyle = {
+  flexShrink: 0,
+  width: 22,
+  height: 22,
+  borderRadius: 8,
+  background: "transparent",
+  border: "none",
+  fontSize: 11,
+  opacity: 0.45,
+  color: "var(--text-3)",
+};
+
+function FileBubble({ file, progress, onAccept, onDecline, onRetry }) {
   const sent = file.direction === "sent";
   const { bg, text } = extStyle(file.filename);
   const isExecutable = EXECUTABLE_EXTS.has((file.filename.split(".").pop() || "").toLowerCase());
   const inProgress = file.status === "transferring" || file.status === "accepted";
   const pending = !sent && file.status === "awaiting_accept";
+  // Resend only exists for outgoing transfers (see filetransfer.py's
+  // resend(): it raises if direction isn't "sent"), so a failed received
+  // file has no retry path from this side, only the sender can retry.
+  const failed = sent && file.status === "failed";
 
   if (sent && inProgress) {
     const pct = Math.round((progress || 0) * 100);
@@ -448,6 +601,11 @@ function FileBubble({ file, progress, onAccept, onDecline }) {
               Accept
             </button>
           </div>
+        )}
+        {failed && (
+          <button onClick={onRetry} style={{ padding: "8px 0", borderRadius: 10, background: "transparent", border: "1px solid var(--danger)", color: "var(--danger)", fontSize: 12.5, fontWeight: 700 }}>
+            Retry send
+          </button>
         )}
         {file.saved_path && <FileOpenActions file={file} />}
       </div>

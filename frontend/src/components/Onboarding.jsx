@@ -1,5 +1,6 @@
 import { useState } from "react";
 import TitleBar from "./TitleBar";
+import { paletteAt, AVATAR_PALETTE_SIZE, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
 
 // Matches design screen 10.1 exactly: a single split-panel window, not a
 // multi-step wizard. Left panel is static messaging (hero line, 3-step
@@ -8,8 +9,15 @@ import TitleBar from "./TitleBar";
 // separate "Permissions" screen for desktop the way the mobile flow has one.
 export default function Onboarding({ onComplete }) {
   const [name, setName] = useState("");
+  const [avatarIndex, setAvatarIndex] = useState(0);
   const trimmed = name.trim();
   const deviceSlug = (trimmed || "device").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
+  const avatar = paletteAt(avatarIndex);
+
+  function handleContinue() {
+    localStorage.setItem(SELF_AVATAR_INDEX_KEY, String(avatarIndex));
+    onComplete(trimmed);
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
@@ -27,7 +35,7 @@ export default function Onboarding({ onComplete }) {
               Talk to who's around you.
             </div>
             <div style={{ fontSize: 16, color: "#fde8da", lineHeight: 1.6, maxWidth: 360 }}>
-              Agora runs on the WiFi you're already on. No account, no servers, no upload step — your messages, calls and files go straight between devices.
+              Agora runs on the WiFi you're already on. No account, no servers, no upload step, your messages, calls and files go straight between devices.
             </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
@@ -51,14 +59,21 @@ export default function Onboarding({ onComplete }) {
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-            <div style={{ width: 96, height: 96, flexShrink: 0, borderRadius: 99, background: "var(--avatar-self)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Instrument Serif, serif", fontSize: 38, color: "var(--accent-strong)" }}>
+            <div style={{ width: 96, height: 96, flexShrink: 0, borderRadius: 99, background: avatar.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Instrument Serif, serif", fontSize: 38, color: avatar.text }}>
               {trimmed[0]?.toUpperCase() || "?"}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-              <button style={{ padding: "9px 15px", borderRadius: 11, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 13, fontWeight: 600, color: "var(--text-strong)", width: "fit-content" }}>
-                Choose photo…
+              <button
+                disabled
+                title="Not built yet: no way to pick/store a custom photo, use Shuffle avatar for now"
+                style={{ padding: "9px 15px", borderRadius: 11, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 13, fontWeight: 600, color: "var(--text-3)", width: "fit-content", opacity: 0.6, cursor: "not-allowed" }}
+              >
+                Choose photo… (coming soon)
               </button>
-              <button style={{ padding: "9px 15px", borderRadius: 11, background: "#2a2320", color: "var(--surface)", fontSize: 13, fontWeight: 600, width: "fit-content", border: "none" }}>
+              <button
+                onClick={() => setAvatarIndex((i) => (i + 1) % AVATAR_PALETTE_SIZE)}
+                style={{ padding: "9px 15px", borderRadius: 11, background: "#2a2320", color: "var(--surface)", fontSize: 13, fontWeight: 600, width: "fit-content", border: "none" }}
+              >
                 Shuffle avatar
               </button>
             </div>
@@ -71,7 +86,7 @@ export default function Onboarding({ onComplete }) {
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter" && trimmed) onComplete(trimmed);
+                if (e.key === "Enter" && trimmed) handleContinue();
               }}
               placeholder="Your name"
               style={{ height: 50, borderRadius: 14, background: "var(--surface)", border: "1.5px solid var(--accent)", padding: "0 16px", fontSize: 16, fontWeight: 500, maxWidth: 420 }}
@@ -85,7 +100,7 @@ export default function Onboarding({ onComplete }) {
             <div style={{ fontSize: 13, color: "#6b5c50", lineHeight: 1.5, maxWidth: 330 }}>Agora needs local network access to find people. Your OS will ask once.</div>
             <button
               disabled={!trimmed}
-              onClick={() => onComplete(trimmed)}
+              onClick={handleContinue}
               style={{ padding: "9px 16px", borderRadius: 11, background: trimmed ? "var(--accent)" : "var(--border)", color: trimmed ? "#fff8f2" : "var(--text-3)", fontSize: 13.5, fontWeight: 600, border: "none", flexShrink: 0 }}
             >
               Continue

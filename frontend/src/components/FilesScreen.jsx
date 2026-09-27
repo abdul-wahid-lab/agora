@@ -179,6 +179,11 @@ export default function FilesScreen() {
             const isExecutable = EXECUTABLE_EXTS.has(extOf(f.filename));
             const pending = f.direction === "received" && f.status === "awaiting_accept";
             const canOpen = Boolean(f.saved_path) && Boolean(window.electronAPI?.openFile);
+            // Same restriction as ConversationPane's FileBubble: only the
+            // sender's copy of a stalled transfer can be resent
+            // (filetransfer.py's resend() rejects anything that isn't
+            // direction "sent").
+            const failed = f.direction === "sent" && f.status === "failed";
             return (
               <div
                 key={f.transfer_id}
@@ -209,6 +214,9 @@ export default function FilesScreen() {
                   )}
                   {pending && <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--accent-strong)", flexShrink: 0 }}>Tap to review</span>}
                   {!pending && canOpen && <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-muted)", flexShrink: 0 }}>Tap to open</span>}
+                  {failed && (
+                    <span style={{ padding: "3px 8px", borderRadius: 99, background: "var(--danger-soft)", font: '600 10px/1.3 "Hanken Grotesk", sans-serif', color: "var(--danger)", flexShrink: 0 }}>Failed</span>
+                  )}
                 </div>
                 <div className="mono" style={{ width: 100, fontSize: 12, color: "var(--text-muted)" }}>{formatSize(f.size)}</div>
                 <div style={{ width: 140, fontSize: 12.5, color: "var(--text-2)" }}>{f.direction === "sent" ? `You → ${peerName(f.peer_id)}` : peerName(f.peer_id)}</div>
@@ -222,6 +230,17 @@ export default function FilesScreen() {
                     style={{ padding: "6px 10px", borderRadius: 9, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 11.5, fontWeight: 600, color: "var(--text-strong)", flexShrink: 0 }}
                   >
                     Save a copy…
+                  </button>
+                )}
+                {failed && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      api.resendFile(f.transfer_id).then(() => api.allFiles().then(setFiles));
+                    }}
+                    style={{ padding: "6px 10px", borderRadius: 9, background: "var(--surface)", border: "1px solid var(--danger)", fontSize: 11.5, fontWeight: 600, color: "var(--danger)", flexShrink: 0 }}
+                  >
+                    Retry
                   </button>
                 )}
               </div>

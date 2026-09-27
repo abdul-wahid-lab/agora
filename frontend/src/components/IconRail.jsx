@@ -1,3 +1,5 @@
+import { paletteAt, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
+
 // Exact icon shapes from the design (10.7 etc.) - each nav item is drawn
 // with plain divs, not an icon font/SVG library, matching the source.
 const ICONS = {
@@ -44,6 +46,12 @@ const NAV = [
 ];
 
 export default function IconRail({ active, onSelect, selfInitial }) {
+  // Only overrides the color for people who onboarded after "Shuffle
+  // avatar" was wired up (i.e. the key actually exists) - anyone who
+  // onboarded before this keeps the original fixed tan color unchanged,
+  // since they were never given a choice to save.
+  const storedAvatarIndex = localStorage.getItem(SELF_AVATAR_INDEX_KEY);
+  const selfAvatar = storedAvatarIndex !== null ? paletteAt(Number(storedAvatarIndex)) : { bg: "var(--avatar-self)", text: "var(--accent-strong)" };
   return (
     <aside
       style={{
@@ -89,13 +97,13 @@ export default function IconRail({ active, onSelect, selfInitial }) {
           width: 40,
           height: 40,
           borderRadius: 99,
-          background: "var(--avatar-self)",
+          background: selfAvatar.bg,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
           fontFamily: "Instrument Serif, serif",
           fontSize: 18,
-          color: "var(--accent-strong)",
+          color: selfAvatar.text,
         }}
       >
         {selfInitial || "?"}
