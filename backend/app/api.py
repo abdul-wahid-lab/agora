@@ -165,6 +165,13 @@ def _on_group_message(evt) -> None:
     )
 
 
+def _on_group_delete(group_id: str, msg_id: str) -> None:
+    # Same purpose as _on_remote_delete but for a group: already removed
+    # from our own store by GroupService by the time this fires, just lets
+    # an already-open group chat drop it live.
+    asyncio.create_task(_broadcast({"type": "group_message_deleted", "group_id": group_id, "msg_id": msg_id}))
+
+
 def _on_group_call_start(evt) -> None:
     # Broadcast locally too when *we* started it (group_service.start_group_call
     # doesn't send a wire message to ourselves) - every member, initiator
@@ -210,6 +217,7 @@ calling = CallService(
 )
 deletion = DeleteService(discovery, messaging, store, on_remote_delete=_on_remote_delete)
 group_service = GroupService(
+    discovery,
     messaging,
     store,
     file_transfer,
@@ -218,6 +226,7 @@ group_service = GroupService(
     on_group_invite=_on_group_invite,
     on_group_message=_on_group_message,
     on_group_call_start=_on_group_call_start,
+    on_group_delete=_on_group_delete,
 )
 
 _peer_watch_task: Optional[asyncio.Task] = None
@@ -252,6 +261,7 @@ async def startup() -> None:
     await messaging.start()
     await deletion.start()
     await file_transfer.start()
+    await group_service.start()
     _peer_watch_task = asyncio.create_task(_watch_peers())
 
 
@@ -259,6 +269,7 @@ async def startup() -> None:
 async def shutdown() -> None:
     if _peer_watch_task:
         _peer_watch_task.cancel()
+    await group_service.stop()
     await file_transfer.stop()
     await deletion.stop()
     await messaging.stop()
@@ -322,6 +333,18 @@ async def get_group_history(group_id: str, limit: int = 100):
     return [{"msg_id": m.msg_id, "sender_peer_id": m.sender_peer_id, "sender_name": m.sender_name, "body": m.body, "ts": m.ts} for m in history]
 
 
+@app.delete("/groups/{group_id}/messages/{msg_id}")
+async def delete_group_message(group_id: str, msg_id: str, everyone: bool = False):
+    """Same 'delete for me' vs 'delete for everyone' split as DELETE
+    /messages/{msg_id}, just fanned out to every other group member instead
+    of a single peer when everyone=true."""
+    if everyone:
+        await group_service.delete_group_message_for_everyone(group_id, msg_id)
+    else:
+        await store.delete_group_message(msg_id)
+    return {"status": "deleted"}
+
+
 class SendGroupFileBody(BaseModel):
     path: str
 
@@ -359,12 +382,13 @@ async def get_group_files(group_id: str, limit: int = 200):
 
 class StartGroupCallBody(BaseModel):
     media: str = "audio"
+    group_call_id: Optional[str] = None
 
 
 @app.post("/groups/{group_id}/call")
 async def start_group_call(group_id: str, body: StartGroupCallBody):
     try:
-        evt = await group_service.start_group_call(group_id, body.media)
+        evt = await group_service.start_group_call(group_id, body.media, group_call_id=body.group_call_id)
     except ValueError as e:
         return {"status": "failed", "reason": str(e)}
     # Broadcast to ourselves too - group_service only sent the wire message

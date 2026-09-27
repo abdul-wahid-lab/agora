@@ -88,10 +88,29 @@ CREATE TABLE IF NOT EXISTS group_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_group_messages_group ON group_messages(group_id, ts);
 
+CREATE TABLE IF NOT EXISTS pending_group_messages (
+    msg_id TEXT NOT NULL,
+    peer_id TEXT NOT NULL,        -- the one member this specific fan-out copy never reached
+    group_id TEXT NOT NULL,
+    sender_peer_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL,
+    body TEXT NOT NULL,
+    ts REAL NOT NULL,
+    PRIMARY KEY (msg_id, peer_id)  -- same message can be pending for several offline members at once
+);
+
 CREATE TABLE IF NOT EXISTS pending_deletes (
     msg_id TEXT PRIMARY KEY,
     peer_id TEXT NOT NULL,
     ts REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pending_group_deletes (
+    msg_id TEXT NOT NULL,
+    peer_id TEXT NOT NULL,   -- the one member this specific delete notice never reached
+    group_id TEXT NOT NULL,
+    ts REAL NOT NULL,
+    PRIMARY KEY (msg_id, peer_id)  -- same delete can be pending for several offline members at once
 );
 """
 
@@ -542,6 +561,84 @@ class MessageStore:
                 (group_id, limit),
             ).fetchall()
             return [GroupMessage(*row) for row in rows]
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def delete_group_message(self, msg_id: str) -> None:
+        """'Delete for me' on a group message - same shape as the 1:1
+        delete_message(): removes only this device's own local copy,
+        nothing goes over the wire."""
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM group_messages WHERE msg_id = ?", (msg_id,))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def save_pending_group_message(self, msg_id: str, peer_id: str, group_id: str, sender_peer_id: str, sender_name: str, body: str, ts: float) -> None:
+        """One offline member missed a group message - remembered here so
+        GroupService's own flush loop (mirrors messaging.py's
+        _flush_pending_loop) can retry just their copy once they reappear,
+        without resending to members who already got it fine."""
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_group_messages (msg_id, peer_id, group_id, sender_peer_id, sender_name, body, ts) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (msg_id, peer_id, group_id, sender_peer_id, sender_name, body, ts),
+            )
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def remove_pending_group_message(self, msg_id: str, peer_id: str) -> None:
+        def _op(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM pending_group_messages WHERE msg_id = ? AND peer_id = ?", (msg_id, peer_id))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def pending_group_messages_for_peer(self, peer_id: str) -> list[GroupMessage]:
+        def _op(conn: sqlite3.Connection) -> list[GroupMessage]:
+            rows = conn.execute(
+                "SELECT msg_id, group_id, sender_peer_id, sender_name, body, ts FROM pending_group_messages WHERE peer_id = ?",
+                (peer_id,),
+            ).fetchall()
+            return [GroupMessage(*row) for row in rows]
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def save_pending_group_delete(self, msg_id: str, peer_id: str, group_id: str, ts: Optional[float] = None) -> None:
+        """One offline member never got told a group message was deleted -
+        remembered here (with the group_id, needed to rebuild the exact
+        group_delete wire message on retry) so GroupService's flush loop can
+        retry just their notice once they reappear, mirroring pending_
+        deletes' own 1:1 shape but keyed per-member since one delete can
+        miss several different offline members at once."""
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_group_deletes (msg_id, peer_id, group_id, ts) VALUES (?, ?, ?, ?)",
+                (msg_id, peer_id, group_id, ts if ts is not None else time.time()),
+            )
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def remove_pending_group_delete(self, msg_id: str, peer_id: str) -> None:
+        def _op(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM pending_group_deletes WHERE msg_id = ? AND peer_id = ?", (msg_id, peer_id))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def pending_group_deletes_for_peer(self, peer_id: str) -> list[tuple[str, str]]:
+        """Returns (msg_id, group_id) pairs - the group_id is what lets the
+        flush loop rebuild a real group_delete wire message, not just a bare
+        msg_id with nowhere to put it."""
+
+        def _op(conn: sqlite3.Connection) -> list[tuple[str, str]]:
+            rows = conn.execute("SELECT msg_id, group_id FROM pending_group_deletes WHERE peer_id = ?", (peer_id,)).fetchall()
+            return [(row[0], row[1]) for row in rows]
 
         return await asyncio.to_thread(self._run, _op)
 

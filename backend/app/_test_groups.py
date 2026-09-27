@@ -99,8 +99,9 @@ async def main() -> None:
     bob_call_start = asyncio.get_event_loop().create_future()
     carol_call_start = asyncio.get_event_loop().create_future()
 
-    alice_groups = GroupService(alice_msg, alice_store, alice_ft, alice_id, "Alice")
+    alice_groups = GroupService(alice_disc, alice_msg, alice_store, alice_ft, alice_id, "Alice")
     bob_groups = GroupService(
+        bob_disc,
         bob_msg,
         bob_store,
         bob_ft,
@@ -111,6 +112,7 @@ async def main() -> None:
         on_group_call_start=lambda e: not bob_call_start.done() and bob_call_start.set_result(e),
     )
     carol_groups = GroupService(
+        carol_disc,
         carol_msg,
         carol_store,
         carol_ft,

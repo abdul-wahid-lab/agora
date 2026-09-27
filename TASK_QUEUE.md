@@ -364,9 +364,9 @@ to what's actually still missing:
     same message out to every other member individually, each stores their
     own copy. [GroupConversationPane.jsx](frontend/src/components/GroupConversationPane.jsx)
     is the chat view, reached by selecting a group instead of a person.
-    Known, deliberate limitation: no ack/retry/offline-queue for group
-    messages in this first version (unlike 1:1 chat's `_flush_pending_loop`),
-    a member offline at send time just misses it.
+    Offline delivery, delete, and forward were added right after, see the
+    entry below, this first version's offline-drop limitation no longer
+    applies.
   - **Group calling, full mesh, capped at 4**: no group-aware code in
     `calling.py` at all - a group call is just several ordinary 1:1 calls
     happening at once, tagged with a shared `group_call_id`
@@ -377,11 +377,29 @@ to what's actually still missing:
     collision tie-break already used). New
     [useGroupCall.js](frontend/src/hooks/useGroupCall.js) computes each
     device's own slice of the mesh and manages N simultaneous
-    RTCPeerConnections; any incoming call carrying a `group_call_id` is
-    auto-accepted as a mesh leg rather than shown as a 1:1 popup.
-    `MAX_GROUP_CALL_MEMBERS = 4` is enforced **on the backend**
-    (`start_group_call` raises `ValueError` over the cap), not only as a
-    disabled button, so it can't be bypassed by calling the API directly.
+    RTCPeerConnections. `MAX_GROUP_CALL_MEMBERS = 4` is enforced **on the
+    backend** (`start_group_call` raises `ValueError` over the cap), not
+    only as a disabled button, so it can't be bypassed by calling the API
+    directly.
+  - **Real consent, not silent auto-join** (fixed 2026-09-27, was flagged
+    right after the first version shipped). Whoever starts a call
+    auto-joins (they already consented), everyone else gets the same
+    ringtone a 1:1 call uses (`startRingtone`, now shared via
+    [webrtc.js](frontend/src/lib/webrtc.js)) and a real floating Join/
+    Decline prompt, matching `CallOverlay.jsx`'s own incoming-call design.
+    Building this surfaced **three real bugs**, each caught by live
+    testing and fixed in turn: (1) the initiator briefly saw a consent
+    prompt for their own call, a genuine race where the WebSocket
+    broadcast could reach them before their own HTTP response did - fixed
+    by generating `group_call_id` client-side and recording consent before
+    the request even goes out, not after; (2) a duplicate 1:1 popup showed
+    on top of the real group prompt, because `useCall.js`'s 1:1 handler
+    had no idea group calls existed - fixed with one check to ignore any
+    incoming call carrying a `group_call_id`; (3) a caller was left stuck
+    at "Connecting…" forever after the other person declined, because a
+    straggler mesh leg can arrive *after* a decline was already clicked -
+    fixed by remembering declined `group_call_id`s and auto-declining any
+    later straggler instead of either re-prompting or leaving it hanging.
   - **Group file and image sharing**: "sending a file to a group" is
     exactly N independent, completely normal 1:1 transfers
     (`send_group_file()` calls the already-tested
@@ -417,6 +435,60 @@ to what's actually still missing:
   senders/receivers (confirmed via a small permanent debug hook,
   `window.__agoraGroupCallDebug()`, left in `useGroupCall.js`), and group
   image sharing with both recipients independently completing.
+- [x] **Group messages get offline delivery, delete, and forward** (fixed
+  2026-09-27, the two real gaps left over from the entry above). Both reuse
+  patterns already proven for 1:1 chat rather than inventing anything new:
+  - **Offline delivery**: `send_group_message()` now checks whether each
+    fan-out actually reached its recipient; an unreachable member's copy is
+    queued in a new `pending_group_messages` table (keyed by
+    `(msg_id, peer_id)`, since one message can be pending for several
+    different offline members at once) instead of silently dropped.
+    `GroupService` gained its own `start()`/`stop()`/`_flush_pending_loop()`,
+    the exact same shape as `messaging.py`'s/`filetransfer.py`'s/
+    `deletion.py`'s (poll `discovery.registry.list()` every 2s, retry
+    anything pending for a now-visible peer).
+  - **Delete for me / delete for everyone**: local-only delete needs no wire
+    message. "Delete for everyone" is the group analogue of `deletion.py`'s
+    own `delete_for_everyone()` - fans a new `group_delete` control message
+    out to every other member, with its own equivalent offline queue
+    (`pending_group_deletes`). New route:
+    `DELETE /groups/{group_id}/messages/{msg_id}?everyone=true|false`.
+  - **Forward**: no new wire protocol here either, forwarding a group
+    message is just calling the existing send-message/send-file endpoint
+    again with the same body/path. The forward menu that used to live
+    inline inside `ConversationPane.jsx` was pulled out into a shared
+    [ForwardMenu.jsx](frontend/src/components/ForwardMenu.jsx) so 1:1 and
+    group chat share one implementation, and both now offer every live peer
+    **and** every other group as a forward target (previously 1:1 chat
+    could only forward to a peer, and groups couldn't forward at all).
+  - **A real bug found by testing**: the first version of the queued
+    `group_delete` flush only stored `msg_id`, leaving nowhere to put the
+    group id on retry - the receiving side's control handler read
+    `msg["group_id"]` unconditionally and crashed with a `KeyError` inside
+    the WebSocket connection handler the instant a queued delete flushed to
+    a reconnected member. The automated test's assertions technically still
+    passed (the local delete happens before the crash), the crash only
+    showed up in the test process's own log, caught because the test also
+    asserted the receiver's `on_group_delete` callback fired with the
+    correct value rather than only checking the message disappeared. Fixed
+    by adding `group_id` to `pending_group_deletes` and its lookup method's
+    return shape.
+  - **Tests**: two new automated suites,
+    [_test_group_message_retry.py](backend/app/_test_group_message_retry.py)
+    and [_test_group_delete.py](backend/app/_test_group_delete.py) (the
+    latter is what caught the `KeyError` bug above), plus every pre-existing
+    backend suite re-verified green. Also verified live against two real
+    `uvicorn` backend processes talking over the actual HTTP/WS wire (not
+    just the in-process service objects the automated suite uses):
+    real `POST /groups`, `POST /groups/{id}/messages`,
+    `DELETE /groups/{id}/messages/{msg_id}`, and a forwarded `POST /messages`
+    all exercised end-to-end through `api.py`'s real routes. **Known gap**:
+    no live browser-UI click-through test of the new delete-menu/
+    forward-menu buttons specifically inside `GroupConversationPane.jsx`
+    (verified instead by a clean production build plus the real two-process
+    API-level test above, since this is CRUD-shaped reuse of components
+    already UI-tested for 1:1 chat, not new interaction logic) - worth a
+    dedicated click-through pass if this area gets touched again.
 - [x] **Settings screens** (fixed 2026-09-27, scoped down from the design).
   New [SettingsScreen.jsx](frontend/src/components/SettingsScreen.jsx),
   reached by clicking the self-avatar bubble at the bottom of `IconRail.jsx`

@@ -6,6 +6,8 @@ import FileOpenActions from "./FileOpenActions";
 import ImagePreview from "./ImagePreview";
 import { isImageFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
 import { usePeers } from "../hooks/usePeers";
+import { useGroups } from "../hooks/useGroups";
+import ForwardMenu from "./ForwardMenu";
 
 function statusGlyph(status) {
   if (status === "delivered" || status === "received") return "✓✓";
@@ -41,6 +43,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   const [gateFile, setGateFile] = useState(null);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const { peers: livePeers } = usePeers();
+  const groups = useGroups();
   const bottomRef = useRef(null);
   const peerIdRef = useRef(peer?.peer_id);
   peerIdRef.current = peer?.peer_id;
@@ -148,23 +151,28 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
     api.clearConversation(peer.peer_id).catch(() => {});
   }
 
-  // Anyone else currently discoverable, excluding this same conversation -
-  // forwarding to a currently-offline peer isn't offered here since there's
-  // no picker feedback for "queued, will send later" yet; unlike a plain
-  // send from the composer, a forward with no visible confirmation that
-  // silently queued would be confusing.
-  const forwardCandidates = livePeers.filter((p) => p.peer_id !== peer.peer_id);
+  // Anyone else currently discoverable, excluding this same conversation,
+  // plus every group this device is in - forwarding to a currently-offline
+  // peer isn't offered here since there's no picker feedback for "queued,
+  // will send later" yet; unlike a plain send from the composer, a forward
+  // with no visible confirmation that silently queued would be confusing.
+  const forwardCandidates = [
+    ...livePeers.filter((p) => p.peer_id !== peer.peer_id).map((p) => ({ id: p.peer_id, name: p.name, kind: "peer" })),
+    ...groups.map((g) => ({ id: g.group_id, name: g.name, kind: "group" })),
+  ];
 
-  function handleForwardMessage(msg, targetPeerId) {
-    api.sendMessage(targetPeerId, msg.body).catch(() => {});
+  function handleForwardMessage(msg, target) {
+    if (target.kind === "group") api.sendGroupMessage(target.id, msg.body).catch(() => {});
+    else api.sendMessage(target.id, msg.body).catch(() => {});
   }
 
-  function handleForwardFile(file, targetPeerId) {
+  function handleForwardFile(file, target) {
     // Only ever offered for a received, completed file - that's the only
     // case with a real local saved_path to re-send from. A file you sent
     // has no path recorded anywhere the frontend can see (see
     // filetransfer.py: saved_path is only ever set on the receiving side).
-    api.sendFile(targetPeerId, file.saved_path).catch(() => {});
+    if (target.kind === "group") api.sendGroupFile(target.id, file.saved_path).catch(() => {});
+    else api.sendFile(target.id, file.saved_path).catch(() => {});
   }
 
   async function sendFileAtPath(path) {
@@ -297,7 +305,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
                   onRetry={() => handleRetryMessage(item.data)}
                   onDelete={(everyone) => handleDeleteMessage(item.data, everyone)}
                   forwardCandidates={forwardCandidates}
-                  onForward={(targetPeerId) => handleForwardMessage(item.data, targetPeerId)}
+                  onForward={(target) => handleForwardMessage(item.data, target)}
                 />
               ) : (
                 <FileBubble
@@ -307,7 +315,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
                   onDecline={() => handleDeclineClick(item.data)}
                   onRetry={() => handleRetryClick(item.data)}
                   forwardCandidates={forwardCandidates}
-                  onForward={(targetPeerId) => handleForwardFile(item.data, targetPeerId)}
+                  onForward={(target) => handleForwardFile(item.data, target)}
                 />
               )}
             </div>
@@ -542,63 +550,6 @@ const deleteGlyphStyle = {
   opacity: 0.45,
   color: "var(--text-3)",
 };
-
-// Shared by MessageBubble and FileBubble. Only ever offered for a message
-// (any direction) or a completed, received file - see the two call sites'
-// own comments for why sent files aren't included. Deliberately doesn't
-// list a currently-offline peer: unlike a normal send from the composer,
-// there'd be no visible confirmation that a forward silently queued, which
-// would just look like it went nowhere.
-function ForwardMenu({ candidates, onPick, align = "right" }) {
-  const [open, setOpen] = useState(false);
-  const disabled = candidates.length === 0;
-  return (
-    <div style={{ position: "relative" }}>
-      <button
-        onClick={() => !disabled && setOpen((v) => !v)}
-        disabled={disabled}
-        title={disabled ? "No one else on this network to forward to" : "Forward"}
-        style={{ ...deleteGlyphStyle, opacity: disabled ? 0.22 : 0.45, cursor: disabled ? "default" : "pointer" }}
-      >
-        ↪
-      </button>
-      {open && (
-        <div
-          style={{
-            position: "absolute",
-            top: 24,
-            [align]: 0,
-            zIndex: 20,
-            minWidth: 180,
-            maxHeight: 220,
-            overflowY: "auto",
-            borderRadius: 12,
-            background: "var(--surface)",
-            border: "1px solid var(--border-soft)",
-            boxShadow: "var(--shadow)",
-            padding: 6,
-          }}
-        >
-          <div style={{ padding: "4px 10px 6px", font: '600 10px/1 "IBM Plex Mono", monospace', letterSpacing: "0.08em", color: "var(--text-3)" }}>
-            FORWARD TO
-          </div>
-          {candidates.map((p) => (
-            <button
-              key={p.peer_id}
-              onClick={() => {
-                setOpen(false);
-                onPick(p.peer_id);
-              }}
-              style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, background: "transparent", border: "none", fontSize: 12.5, fontWeight: 600, color: "var(--text-strong)" }}
-            >
-              {p.name}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 function FileBubble({ file, progress, onAccept, onDecline, onRetry, forwardCandidates, onForward }) {
   const sent = file.direction === "sent";
