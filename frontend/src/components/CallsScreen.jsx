@@ -36,7 +36,7 @@ function summaryLine(call) {
 // and offers a one-click callback/redial.
 const PAGE_SIZE = 50;
 
-export default function CallsScreen({ onPlaceCall }) {
+export default function CallsScreen({ onPlaceCall, filterPeerId, onClearPeerFilter }) {
   const { peers } = usePeers();
   const [history, setHistory] = useState([]);
   const [filter, setFilter] = useState("all");
@@ -52,7 +52,11 @@ export default function CallsScreen({ onPlaceCall }) {
     let cancelled = false;
     async function load() {
       try {
-        const list = await api.allCallHistory(limit);
+        // Conversation menu's "View Call History with this Peer" uses the
+        // real dedicated per-peer endpoint instead of client-side filtering
+        // the combined list, so it isn't capped by whatever the combined
+        // list's own pagination window happens to be loaded to right now.
+        const list = filterPeerId ? await api.callHistory(filterPeerId) : await api.allCallHistory(limit);
         if (!cancelled) {
           setHistory(list);
           setLoadingMore(false);
@@ -67,12 +71,12 @@ export default function CallsScreen({ onPlaceCall }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [limit]);
+  }, [limit, filterPeerId]);
 
   // A full page came back, so there may be older calls beyond this window -
   // the backend has no separate "total count" endpoint, this is the same
   // "did we get a full page" signal any offset-based pager relies on.
-  const mayHaveMore = history.length >= limit;
+  const mayHaveMore = !filterPeerId && history.length >= limit;
 
   function handleLoadMore() {
     setLoadingMore(true);
@@ -100,8 +104,18 @@ export default function CallsScreen({ onPlaceCall }) {
   return (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", padding: "22px 26px", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between" }}>
-        <div className="serif" style={{ fontSize: 30, lineHeight: 1 }}>
-          Calls
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div className="serif" style={{ fontSize: 30, lineHeight: 1 }}>
+            Calls
+          </div>
+          {filterPeerId && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 6px 5px 12px", borderRadius: 99, background: "var(--surface-2)", fontSize: 12, fontWeight: 600 }}>
+              With {peerName(filterPeerId)}
+              <button onClick={onClearPeerFilter} style={{ width: 20, height: 20, borderRadius: 99, background: "transparent", border: "none", fontSize: 11, color: "var(--text-muted)" }}>
+                ✕
+              </button>
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           {["all", "missed"].map((f) => (

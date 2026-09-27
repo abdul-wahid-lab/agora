@@ -383,6 +383,16 @@ Fixed two ways together, per direct user request to also change the interaction 
 
 **Tested live** (two real backend processes, headless Chrome driving the real UI): confirmed the radar shows by default, confirmed selecting a peer replaces it with their conversation, confirmed clicking Nearby again forces the radar back over that conversation, confirmed clicking Rescan opens the overlay immediately and it closes automatically once the real refresh finishes, and confirmed the exact same conversation is still there underneath afterward, not reset to the radar.
 
+### Step 22: The top menu bar is real · ✅ DONE (live-verified)
+
+**What changed:** the six-item "Agora File Conversation Network View Help" bar was purely decorative until now. Every item is either a new UI surface over an already-existing real action, or genuinely new-but-real work - no placeholder items anywhere, every disabled state carries a real reason. Full menu-by-menu breakdown, including what was new backend/frontend work vs. pure reuse, and two real bugs found by live testing (a test-only `.click()` never firing the `mousedown` a menu's outside-click-to-close listens for, and a React-controlled input not picking up a value set via the native property setter), are written up in TASK_QUEUE.md's own entry for this rather than duplicated here.
+
+Highlights: the literal "Agora" text is now the real logo image; File gained New Group/Send File/Open Downloads Folder/Import-Export Contacts/Clear All History/Exit; Conversation gained Search/Clear/Export/Mute/View-call-history-with-this-peer (each honestly scoped, e.g. "Mute" only silences call notifications today since message notifications don't exist yet); Network gained Rescan/Device Info/Known Peers/Diagnostics; View gained real tab keybindings, a sidebar toggle, zoom, and always-on-top; Help gained About/GitHub links/Shortcuts/a manual opt-in-only "Check for Updates" that's the app's first and only code path that ever touches the internet, deliberately never automatic.
+
+**New backend**: `list_known_peers()` in storage.py, `GET /peers/known` and `POST /peers/known/import`. **New Electron IPC**: generic text save/read, open-downloads-folder, zoom, always-on-top, allow-listed external-link opening. **New shared frontend**: `DropdownMenu.jsx`, `TitleBarModals.jsx`, `lib/mute.js`.
+
+**Tests performed:** full backend suite (8 files) re-verified green. Live end-to-end UI tests via headless Chrome against real backend processes, covering the logo swap, all 5 menus, Conversation menu's enabled/disabled states, real search filtering of the actual rendered timeline, mute's persisted checkmark, real data in Device Info/Diagnostics, sidebar toggling, Settings navigation, and the New Group flow. Electron-only pieces (zoom, always-on-top, native file dialogs) weren't live-tested through headless Chrome, since browser dev mode has no `window.electronAPI` - each correctly shows disabled with an honest reason there instead.
+
 ## Test it yourself
 
 There's no UI wired up yet: Phases 1, 2, and 2B are CLI-only for now (`app.cli_chat`), by design, per the spec's own "prove the transport before touching UI" instruction.

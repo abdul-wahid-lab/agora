@@ -25,6 +25,8 @@ async function request(path, options) {
 export const api = {
   me: () => request("/me"),
   peers: () => request("/peers"),
+  knownPeers: () => request("/peers/known"),
+  importContacts: (contacts) => request("/peers/known/import", { method: "POST", body: JSON.stringify({ contacts }) }),
   history: (peerId) => request(`/messages/${peerId}`),
   conversations: () => request("/conversations"),
   sendMessage: (peerId, body) =>

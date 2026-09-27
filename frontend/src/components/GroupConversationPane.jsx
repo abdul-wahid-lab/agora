@@ -48,11 +48,12 @@ function collapseSentCopies(files) {
 // machinery (all already generic, none of it was actually 1:1-specific),
 // group chat only adds the sender-name label and the sent-copy collapsing
 // above - no new transfer protocol, no new safety logic.
-export default function GroupConversationPane({ group, onlineCount, onStartCall, me, livePeers = [], conversations = [], otherGroups = [] }) {
+export default function GroupConversationPane({ group, onlineCount, onStartCall, me, livePeers = [], conversations = [], otherGroups = [], searchOpen = false, onCloseSearch }) {
   const [messages, setMessages] = useState([]);
   const [files, setFiles] = useState([]);
   const [draft, setDraft] = useState("");
   const [gateFile, setGateFile] = useState(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [filePath, setFilePath] = useState("");
@@ -210,7 +211,10 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
     if (res?.status === "failed") window.alert(res.reason || "Couldn't start the group call.");
   }
 
-  const timeline = [...messages.map((m) => ({ kind: "message", ts: m.ts, data: m })), ...collapseSentCopies(files).map((f) => ({ kind: "file", ts: f.ts, data: f }))].sort((a, b) => a.ts - b.ts);
+  const query = searchOpen ? searchQuery.trim().toLowerCase() : "";
+  const timeline = [...messages.map((m) => ({ kind: "message", ts: m.ts, data: m })), ...collapseSentCopies(files).map((f) => ({ kind: "file", ts: f.ts, data: f }))]
+    .filter((item) => !query || (item.kind === "message" ? item.data.body.toLowerCase().includes(query) : item.data.filename.toLowerCase().includes(query)))
+    .sort((a, b) => a.ts - b.ts);
 
   let lastDay = null;
 
@@ -246,10 +250,32 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
         </div>
       </div>
 
+      {searchOpen && (
+        <div style={{ flex: "0 0 auto", padding: "10px 20px", borderBottom: "1px solid var(--divider)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 10 }}>
+          <input
+            autoFocus
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Escape" && onCloseSearch?.()}
+            placeholder={`Search in ${group.name}`}
+            style={{ flex: 1, height: 36, borderRadius: 11, border: "1px solid var(--border)", padding: "0 13px", fontSize: 13.5 }}
+          />
+          <button
+            onClick={() => {
+              setSearchQuery("");
+              onCloseSearch?.();
+            }}
+            style={{ width: 34, height: 34, borderRadius: 11, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 13, color: "var(--text-muted)" }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 11 }}>
         {timeline.length === 0 && (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)", fontSize: 14 }}>
-            No messages yet, say hello to the group.
+            {query ? `No messages match "${searchQuery.trim()}".` : "No messages yet, say hello to the group."}
           </div>
         )}
         {timeline.map((item) => {

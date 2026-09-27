@@ -74,26 +74,131 @@ stale entries pile up.
 
 ## Dead UI elements (found during the 2026-09-26 two-device test)
 
-- [ ] **The top menu bar ("Agora File Conversation Network View Help") is
-  entirely decorative.** File: `frontend/src/components/TitleBar.jsx`
-  (`MENU_ITEMS`, ~line 18): each is a plain `<span>`, no click handler, no
-  dropdown, nothing. It visually matches the design's real desktop menu bar
-  concept but has zero function behind any of the six items. This is a
-  bigger job than the other dead-button entries below: each menu needs
-  actual decided-on content before it's worth wiring up (e.g. File → maybe
-  nothing meaningful for this app; Conversation → clear chat/view info,
-  overlapping with the dead "⋯" button below; Network → Rescan/connection
-  info; View → nothing built yet to toggle; Help → About/version). Worth
-  deciding what (if anything) really belongs in each menu before building
-  empty dropdowns that would just be a different flavor of the same
-  dead-UI problem.
+- [x] **Correction (2026-09-28): the "⋯" (more options) button in the chat
+  header was NOT actually dead** (the entry that used to claim it was dead
+  was stale - it already had a real "Clear chat history" action, from an
+  earlier session's work never reflected here). That action has since moved
+  to the real **Conversation** menu (see the top-menu-bar entry below), and
+  the "⋯" button itself was removed as the now-redundant second path to it -
+  both the correction and the follow-up move are done.
 
-- [ ] **"⋯" (more options) button in the chat header is dead.**
-  File: `frontend/src/components/ConversationPane.jsx` (~line 204). No
-  `onClick` at all: not disabled, no tooltip, just does nothing when
-  clicked. Needs either a real menu (e.g. view profile, clear chat, block)
-  or removal until there's something real behind it. Candidate home for the
-  now-documented "clear whole conversation" feature above.
+- [ ] **Per-chat "⋯" quick-actions, WhatsApp-reference** (noted 2026-09-28,
+  from a real WhatsApp screenshot the user shared: Search, Media/links/docs,
+  Disappearing messages, Chat theme, More). Not built now - queued for
+  later, kept here as a concrete reference rather than a vague "add more to
+  the menu" note. Of the five: "Search" is covered by the Conversation
+  menu's own "Search in Conversation..." being built alongside this entry.
+  The other three are genuinely new, real features, none built anywhere in
+  Agora today:
+  - **Media, links, and docs** - a filtered view scoped to *this one*
+    conversation's shared files/images (distinct from `FilesScreen.jsx`,
+    which is a global browser across every conversation) - real data
+    already exists (`GET /files/{peer_id}`), just needs a per-conversation
+    filtered UI, no new backend.
+  - **Disappearing messages** - real backend work: messages that
+    auto-delete after a set time, needs a per-conversation (or per-message)
+    expiry mechanism and a background sweep, not built at all today.
+  - **Chat theme** - lowest priority of the three, a per-conversation color
+    customization, purely cosmetic - real if built (persisted per peer_id,
+    actually applied to that conversation's bubble colors), not a
+    placeholder, just not scoped or started.
+
+- [x] **The top menu bar ("Agora File Conversation Network View Help") is
+  now real** (fixed 2026-09-28). Every item below is either a new UI
+  surface over an already-existing real action, or genuinely new-but-real
+  work - no placeholder items, every disabled state carries a real reason.
+
+  **Branding**: the literal "Agora" text label is now the real logo image
+  (`frontend/public/logo.png`) instead - not a menu, just the brand mark.
+
+  **File**: New Group... (opens the same real `ChatsListPanel.jsx` form,
+  now controllable from outside via a lifted `creatingOverride` prop) ·
+  Send File... (peer picker + the existing `api.sendFile()`, offline peers
+  included since sending already queues the same way forwarding does) ·
+  Open Received Files Folder (new `app:openDownloadsFolder` IPC,
+  `shell.openPath` on the real downloads dir) · Import/Export Contacts...
+  (new `GET /peers/known` + `POST /peers/known/import` routes and
+  `list_known_peers()` in `storage.py`, read/write via new generic
+  `file:saveText`/`file:readText` IPC) · Preferences... (opens Settings) ·
+  Clear All History (loops `api.clearConversation()`) · Exit.
+
+  **Conversation** (scoped to whichever chat is open): Search in
+  Conversation... (real client-side filter over the loaded timeline, both
+  1:1 and group) · Clear Chat History (moved here from the now-removed "⋯"
+  button - **the "Delete Conversation" vs "Clear Conversation History"
+  question from the plan resolved itself**: `GET /conversations` is already
+  derived from the `messages` table's own most-recent-row-per-peer join, so
+  clearing all messages already makes a peer vanish from the Chats list on
+  its own - a second, separate "delete" action would have been identical to
+  the first, so only one was built) · Export Conversation... (fetches the
+  real current history directly rather than reading a child component's
+  local state, formats as `.txt`, saved via `file:saveText`) · Mute
+  Notifications for this Conversation (new [lib/mute.js](frontend/src/lib/mute.js),
+  localStorage-backed like the avatar-color choice; **honestly scoped**:
+  the only real OS notification anywhere in the app is for an incoming
+  *call* (`useCall.js`), there's no message-notification system yet, so
+  this only mutes call notifications from that peer today) · View Call
+  History with this Peer (real dedicated `GET /calls/history/{peer_id}`
+  endpoint, `CallsScreen.jsx` gained a `filterPeerId` prop and a real filter
+  chip instead of client-side filtering the combined list) · Block Peer
+  (disabled, links to the existing queued **Block a peer** entry, not a
+  second copy of it).
+
+  **Network**: Rescan for Peers (same real action + radar overlay already
+  built) · My Device Info (real `GET /me` + avatar color) · Known Peers
+  (new `list_known_peers()`/`GET /peers/known`, since `GET /conversations`
+  only returns peers with real message history) · Change Display Name /
+  Avatar (shortcuts into Settings) · Network Diagnostics... (real per-peer
+  `source: "mdns"|"udp"` breakdown from `GET /peers`, deliberately doesn't
+  fabricate a "why isn't X showing up" detection that doesn't exist).
+
+  **View**: Nearby/Chats/Calls/Files with real Ctrl+1..4 keybindings ·
+  Toggle Sidebar (real show/hide around `InfoSidebar.jsx`) · Zoom In/Out/
+  Reset (real `webContents.setZoomLevel`, new IPC) · Always on Top (real
+  `win.setAlwaysOnTop()`, new IPC).
+
+  **Help**: About Agora (opens Settings; lands on the home view, not a
+  scoped deep-link straight into the About sub-view, kept simple rather
+  than adding controlled sub-view state for one menu shortcut) · View on
+  GitHub / Report an Issue (real `shell.openExternal`, allow-listed to
+  `github.com` URLs only, not a general-purpose external-link opener) ·
+  Keyboard Shortcuts... (a real reference panel, built after the real View
+  keybindings existed, not before) · Check for Updates... - **the internet-
+  dependency tension flagged in the original plan was resolved by building
+  it exactly as suggested there**: a manual, opt-in-only fetch to GitHub's
+  real releases API, triggered only by clicking this menu item, never
+  automatic or backgrounded - the modal itself states plainly that this is
+  the only thing in Agora that ever touches the internet.
+
+  **New shared components**: [DropdownMenu.jsx](frontend/src/components/DropdownMenu.jsx)
+  (the generic menu shell, closes on outside-click or a real Escape
+  keydown) and [TitleBarModals.jsx](frontend/src/components/TitleBarModals.jsx)
+  (Send File/Contacts/Device Info/Known Peers/Diagnostics/Shortcuts, all
+  sharing one `ModalOverlay` shell).
+
+  **Tests performed**: full backend suite (8 files) re-verified green after
+  the `storage.py`/`api.py` additions. Live end-to-end UI tests via headless
+  Chrome (real backend processes, real clicks) covering: the logo replacing
+  the text label; all 5 menus present; Conversation menu correctly disabled
+  with no chat open and enabled once one is; Search in Conversation actually
+  filtering the real rendered timeline (not just opening an inert input);
+  Mute toggling a real, localStorage-persisted checkmark; My Device Info and
+  Network Diagnostics showing real peer_id/discovery-source data; Toggle
+  Sidebar actually hiding/showing the real sidebar; About Agora navigating
+  to the real Settings screen; File menu's New Group opening the real
+  creation form. Two test-script bugs were found and fixed along the way,
+  both real traps worth remembering: (1) `element.click()` in a test never
+  fires the `mousedown` event `DropdownMenu`'s outside-click-to-close
+  listens for, so a menu "closed" that way was actually still open,
+  corrupting later toggle-based open/close checks - fixed by dispatching a
+  real Escape keydown via CDP instead; (2) setting a React-controlled
+  input's value via the native property setter didn't trigger its
+  `onChange` here, unlike some other React setups - fixed by using CDP's
+  real `Input.insertText` after focusing the field, which fires genuine
+  browser input events. Electron-only pieces (zoom, always-on-top, open
+  downloads folder, the native Send File dialog) were not live-tested
+  through headless Chrome, since browser dev mode has no `window.electronAPI`
+  at all - each correctly shows disabled with an honest reason there instead.
 
 - [x] **"Choose photo…" in onboarding now has a real feature behind it**
   (fixed 2026-09-27). Deliberately scoped down to self-view-only, same as
@@ -670,6 +775,22 @@ to what's actually still missing:
   the phone reimplements the same wire protocol natively rather than running
   the Python backend on-device. Deliberately deferred until desktop is
   fully validated on two real machines.
+- [ ] **Block a peer** (requested 2026-09-28, explicitly deferred by the user
+  to build later, not now). Right now anyone on the LAN can message or call
+  this device, no way to stop a specific peer_id - `SettingsScreen.jsx`'s
+  Privacy view already has an honest disabled placeholder for this
+  ("Not built yet, there's no way to block a peer_id today... Real feature,
+  queued"), this is that same gap made into a real queue item. Real
+  backend work, not just a UI switch: needs a `blocked_peers` table, and
+  every real entry point a blocked peer could otherwise reach has to
+  actually check it and refuse - `messaging.py`'s incoming message handler,
+  `calling.py`'s incoming offer handler, `filetransfer.py`'s incoming file
+  offer handler - a block that only hides someone from the peer list while
+  still silently accepting their messages/calls/files underneath wouldn't
+  be a real block. Where this surfaces in the UI (a button on a peer's
+  `InfoSidebar`, a right-click option, the already-drawn Settings toggle,
+  or more than one of these) is also still an open decision, not just the
+  backend enforcement.
 
 ## Smaller known gaps (from earlier phases, still true)
 

@@ -289,6 +289,32 @@ async def get_peers():
     return [{"peer_id": p.peer_id, "name": p.name, "address": p.address, "port": p.port, "source": p.source} for p in discovery.registry.list()]
 
 
+@app.get("/peers/known")
+async def get_known_peers():
+    """Every peer ever seen, not just ones with real message history (that's
+    GET /conversations) - backs the Network menu's "Known Peers" view and
+    contacts export."""
+    return await store.list_known_peers()
+
+
+class ImportContactsBody(BaseModel):
+    contacts: list[dict]  # [{"peer_id", "name", "last_seen"}, ...] - same shape GET /peers/known returns
+
+
+@app.post("/peers/known/import")
+async def import_known_peers(body: ImportContactsBody):
+    """Re-seeds known_peers from a previously exported list - only ever
+    pre-labels a peer_id with a name for when it's next actually discovered
+    on a network, it doesn't make anyone reachable who wasn't already."""
+    count = 0
+    for c in body.contacts:
+        if not c.get("peer_id") or not c.get("name"):
+            continue
+        await store.save_known_peer(c["peer_id"], c["name"], c.get("last_seen"))
+        count += 1
+    return {"imported": count}
+
+
 class SendMessageBody(BaseModel):
     peer_id: str
     body: str

@@ -16,8 +16,14 @@ function fmtPreview(body, direction) {
 // backend's known_peers table - see storage.py), rather than looking one up
 // in the live `peers` list, so a conversation still shows a real name after
 // that peer goes offline instead of falling back to "Unknown".
-export default function ChatsListPanel({ conversations, groups, selected, onSelect, selectedGroupId, onSelectGroup }) {
-  const [creating, setCreating] = useState(false);
+// `creatingOverride`/`onCreatingOverrideChange` let the top File menu's "New
+// Group..." open this same real form from outside (see TitleBar.jsx) -
+// falls back to fully self-contained local state when not provided, so
+// nothing else about this component's normal use changes.
+export default function ChatsListPanel({ conversations, groups, selected, onSelect, selectedGroupId, onSelectGroup, creatingOverride, onCreatingOverrideChange }) {
+  const [localCreating, setLocalCreating] = useState(false);
+  const creating = creatingOverride !== undefined ? creatingOverride : localCreating;
+  const setCreating = onCreatingOverrideChange || setLocalCreating;
 
   return (
     <div style={{ width: 300, flex: "0 0 auto", borderRight: "1px solid var(--divider)", background: "var(--panel)", display: "flex", flexDirection: "column", padding: "18px 14px", gap: 10 }}>
