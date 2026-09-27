@@ -77,7 +77,7 @@ This repo is the design; the app itself is being built in step with it, phase by
 | 5: Polish | ⏳ not started | 6.1, 6.3–6.5 |
 
 - **Discovery**: devices find each other on the LAN via mDNS, with a UDP broadcast fallback for networks that filter it. Verified: peers appear/disappear live as they join and leave.
-- **Messaging**: direct WebSocket between peers (no server in between), messages persisted locally per device, with sent/delivered acknowledgment. Verified: a message sent to a peer that just dropped off the network is held and delivered exactly once, in order, once that peer reappears.
+- **Messaging**: direct WebSocket between peers (no server in between), messages persisted locally per device, with sent/delivered acknowledgment. Verified: a message sent to a peer that just dropped off the network is held and delivered exactly once, in order, once that peer reappears. Delete for me, delete for everyone (with the same held-and-retried-on-reconnect guarantee if the other person is briefly offline), clearing a whole conversation or the call history, and forwarding a message or a received file, are all built and working.
 - **File sharing**: any file type, offer/accept consent before anything moves, a dedicated connection per transfer so large files stream straight to disk, receiver-side hash verification, and resume from the exact byte offset after a drop. Executable/installable files get a distinctly stronger warning, plus bandwidth-sharing that measurably throttles transfers while a call is active.
 - **Calling**: real peer-to-peer WebRTC audio and video (no STUN/TURN needed, since the same subnet never requires it), signaling relayed over the existing WebSocket rather than any cloud service. Deterministic collision handling if both sides call each other at once, a persisted call history, and an incoming-call toast that shows up regardless of which screen you're on.
 - A local API layer (`app.api`, FastAPI) wraps all of the above for the UI to call instead of a human typing into a CLI.
@@ -90,8 +90,9 @@ This repo is the design; the app itself is being built in step with it, phase by
 | UI rebuilt to match the actual design file (not an approximation) | ✅ done |
 | Nearby, Chats, Files, Calls: all live, all wired to the real backend | ✅ done |
 | Electron packaging (frameless window, auto-spawned backend, Windows installer) | ✅ done |
+| Group chat, group calling, group file/image sharing | ✅ done (calling capped at 4 people, full mesh, see Architecture below) |
 
-Not built: group chat and group/mesh calling (the design shows them; the backend has no concept of a "group" yet, which is real, separate future work, not a UI gap).
+Not built: raising the group-calling cap past 4 people, which needs a real relay design (discussed and deliberately deferred, not a missing feature so much as a scaling decision not yet needed), and offline delivery/delete/forward for group messages (all exist for 1:1 chat already).
 
 ## Architecture
 
@@ -226,11 +227,15 @@ flowchart TD
     API["api.py"] --> MS
 ```
 
-Three tables make up the whole schema, one row per message/file/call, on whichever device sent or received it:
+Five tables make up the whole schema, one row per message/file/call/peer/held-delete, on whichever device sent or received it:
 
 | `messages` | `files` | `calls` |
 |---|---|---|
 | `msg_id` (PK), `peer_id`, `direction` (sent/received), `body`, `status` (`pending→sent→delivered`, or `received`/`failed`), `ts` | `transfer_id` (PK), `peer_id`, `direction`, `filename`, `size`, `sha256`, `is_executable`, `status`, `saved_path`, `ts` | `call_id` (PK), `peer_id`, `direction`, `media` (audio/video), `status`, `started_at`, `ended_at`, `duration` |
+
+| `known_peers` | `pending_deletes` |
+|---|---|
+| `peer_id` (PK), `name`, `last_seen`: a peer's display name outlives their live discovery session, so a conversation still shows a real name once they've gone offline, not just while they're on the network right now | `msg_id` (PK), `peer_id`, `ts`: a "delete for everyone" that couldn't reach the peer immediately, retried automatically once they're back online, the same guarantee a normal held message already has |
 
 Every read/write opens a short-lived connection on a worker thread (`asyncio.to_thread`) rather than sharing one connection across coroutines: simple, and correct for what is, per device, low-volume traffic. Writes are `INSERT OR REPLACE`, so a status update (`pending` → `delivered`) is just the same row rewritten, not a new one appended.
 

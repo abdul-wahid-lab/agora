@@ -11,10 +11,15 @@ import CallOverlay from "./components/CallOverlay";
 import FilesScreen from "./components/FilesScreen";
 import Onboarding from "./components/Onboarding";
 import ScanRadar from "./components/ScanRadar";
+import SettingsScreen from "./components/SettingsScreen";
+import GroupConversationPane from "./components/GroupConversationPane";
+import GroupCallOverlay from "./components/GroupCallOverlay";
 import { api } from "./api";
 import { useCall } from "./hooks/useCall";
 import { usePeers } from "./hooks/usePeers";
 import { useConversations } from "./hooks/useConversations";
+import { useGroups } from "./hooks/useGroups";
+import { useGroupCall } from "./hooks/useGroupCall";
 
 const ONBOARDING_KEY = "agora.onboarded";
 
@@ -22,11 +27,14 @@ export default function App() {
   const [onboarded, setOnboarded] = useState(() => localStorage.getItem(ONBOARDING_KEY) === "1");
   const [active, setActive] = useState("nearby");
   const [selectedPeerId, setSelectedPeerId] = useState(null);
+  const [selectedGroupId, setSelectedGroupId] = useState(null);
   const [me, setMe] = useState(null);
   const [peerCount, setPeerCount] = useState(0);
   const [connected, setConnected] = useState(false);
   const { peers, refreshing: rescanning, refresh: rescan } = usePeers();
   const conversations = useConversations();
+  const groups = useGroups();
+  const { groupCall, muted: groupMuted, cameraOff: groupCameraOff, startGroupCall, hangUpGroupCall, toggleMute: toggleGroupMute, toggleCamera: toggleGroupCamera, registerVideoRef } = useGroupCall(me?.peer_id);
   const {
     call,
     error: callError,
@@ -91,9 +99,21 @@ export default function App() {
   const offlineConversation = !livePeer && selectedPeerId ? conversations.find((c) => c.peer_id === selectedPeerId) : null;
   const selectedPeer = livePeer || (offlineConversation ? { peer_id: selectedPeerId, name: offlineConversation.name || "Unknown" } : null);
   const selectedPeerOnline = Boolean(livePeer);
+  const selectedGroup = groups.find((g) => g.group_id === selectedGroupId) || null;
+  const selectedGroupOnlineCount = selectedGroup ? selectedGroup.members.filter((m) => peers.some((p) => p.peer_id === m.peer_id)).length : null;
 
   function handleSelectTab(tab) {
     setActive(tab);
+  }
+
+  function handleSelectPeer(peerId) {
+    setSelectedGroupId(null);
+    setSelectedPeerId(peerId);
+  }
+
+  function handleSelectGroup(groupId) {
+    setSelectedPeerId(null);
+    setSelectedGroupId(groupId);
   }
 
   function handleOpenCall(peerId, media) {
@@ -109,7 +129,7 @@ export default function App() {
 
         {active === "nearby" && (
           <>
-            <PeerList peers={peers} selected={selectedPeerId} onSelect={setSelectedPeerId} onRescan={rescan} scanning={rescanning} />
+            <PeerList peers={peers} selected={selectedPeerId} onSelect={handleSelectPeer} onRescan={rescan} scanning={rescanning} />
             <ConversationPane peer={selectedPeer} online={selectedPeerOnline} onOpenCall={handleOpenCall} emptyState={<ScanRadar peers={peers} />} />
             <InfoSidebar peer={selectedPeer} online={selectedPeerOnline} />
           </>
@@ -117,15 +137,30 @@ export default function App() {
 
         {active === "chats" && (
           <>
-            <ChatsListPanel conversations={conversations} selected={selectedPeerId} onSelect={setSelectedPeerId} />
-            <ConversationPane peer={selectedPeer} online={selectedPeerOnline} onOpenCall={handleOpenCall} />
-            <InfoSidebar peer={selectedPeer} online={selectedPeerOnline} />
+            <ChatsListPanel
+              conversations={conversations}
+              groups={groups}
+              selected={selectedPeerId}
+              onSelect={handleSelectPeer}
+              selectedGroupId={selectedGroupId}
+              onSelectGroup={handleSelectGroup}
+            />
+            {selectedGroupId ? (
+              <GroupConversationPane group={selectedGroup} onlineCount={selectedGroupOnlineCount} onStartCall={(media) => selectedGroup && startGroupCall(selectedGroup, media)} />
+            ) : (
+              <>
+                <ConversationPane peer={selectedPeer} online={selectedPeerOnline} onOpenCall={handleOpenCall} />
+                <InfoSidebar peer={selectedPeer} online={selectedPeerOnline} />
+              </>
+            )}
           </>
         )}
 
         {active === "calls" && <CallsScreen onPlaceCall={placeCall} />}
 
         {active === "files" && <FilesScreen />}
+
+        {active === "settings" && <SettingsScreen me={me} />}
       </div>
 
       <StatusBar connected={connected} right={callError || (me ? `peer_id ${me.peer_id.slice(0, 8)}` : "")} />
@@ -145,6 +180,16 @@ export default function App() {
         onCancel={() => hangUp()}
         onToggleMute={toggleMute}
         onToggleCamera={toggleCamera}
+      />
+
+      <GroupCallOverlay
+        groupCall={groupCall}
+        muted={groupMuted}
+        cameraOff={groupCameraOff}
+        onToggleMute={toggleGroupMute}
+        onToggleCamera={toggleGroupCamera}
+        onHangUp={hangUpGroupCall}
+        registerVideoRef={registerVideoRef}
       />
     </div>
   );

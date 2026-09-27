@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openFile: (filePath) => ipcRenderer.invoke("file:open", filePath),
   showFileInFolder: (filePath) => ipcRenderer.invoke("file:showInFolder", filePath),
   saveFileAs: (sourcePath, suggestedName) => ipcRenderer.invoke("file:saveAs", { sourcePath, suggestedName }),
+  readImageDataUrl: (filePath) => ipcRenderer.invoke("file:readImageDataUrl", filePath),
 });
 
 // Tells api.js which port main.cjs actually spawned the backend on, so the

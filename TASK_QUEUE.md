@@ -179,9 +179,8 @@ stale entries pile up.
 
 Originally none of these existed anywhere in the codebase: confirmed by
 grepping the whole backend and frontend for delete/forward-message logic,
-only hit was an unrelated file-transfer cleanup test. All four are now
-fixed (2026-09-26, see "Fixed since this file was created" at the top);
-only "forward" (a separate, distinct feature) is still open. Difficulty as
+only hit was an unrelated file-transfer cleanup test. All six items below
+(four delete variants, two forward variants) are now fixed. Difficulty as
 compared before building:
 
 | Feature | Difficulty | Status |
@@ -190,39 +189,76 @@ compared before building:
 | Clear a whole conversation's history | Easy-Moderate | Fixed |
 | Clear call history entries | Easy-Moderate | Fixed |
 | Delete for everyone (single message) | Hard | Fixed |
-- [ ] **Forward a text message.** The easy version of forwarding: pick a
-  message, pick a target conversation, send its `body` as a new outgoing
-  message. Mostly a UI flow (message picker + conversation picker), the send
-  path itself already exists.
-- [ ] **Forward a file.** Not the same as forwarding text: a file transfer is
-  its own protocol (`filetransfer.py`), not a database row that can be
-  copied. "Forwarding" a received file really means re-offering/re-sending
-  the already-downloaded file to a new peer as a brand new transfer, which
-  reuses `FileTransferService.send_file()` but needs its own UI entry point
-  from a `FileBubble`.
+| Forward a text message | Easy | Fixed (2026-09-27) |
+| Forward a file | Moderate | Fixed (2026-09-27) |
 
-All four need a message-level UI affordance that doesn't exist yet either
-(long-press or hover menu on a `MessageBubble`/`FileBubble` to expose these
-actions) - this is the natural place the dead "⋯" header button's
-functionality could partly live too, worth designing together.
+- [x] **Forward a text message and forward a received file** (2026-09-27).
+  Both reuse a single new shared component,
+  [ForwardMenu](frontend/src/components/ConversationPane.jsx) (in
+  `ConversationPane.jsx`, used by both `MessageBubble` and `FileBubble`): a
+  small ↪ icon opens a popover listing everyone else currently discoverable
+  (`usePeers()`, called directly inside `ConversationPane` since it's a
+  self-contained hook, no new prop-threading through `App.jsx` needed),
+  excluding the current conversation's own peer. Picking someone just calls
+  the existing `api.sendMessage()` (for a message, any direction, text
+  forwarding isn't sender-only the way delete-for-everyone is) or
+  `api.sendFile()` (for a file) against that target, no new backend routes
+  at all, this is pure reuse of paths that already existed and were already
+  tested.
+  - **File forwarding is deliberately scoped to received, completed files
+    only.** A file you sent has no real local path recorded anywhere the
+    frontend can see, confirmed by reading `filetransfer.py`:
+    `saved_path` is only ever set on the *receiving* side
+    (`update_file_status(..., saved_path=...)`), a sent file's original
+    path only ever lives in the backend's in-memory `_outgoing_paths`
+    (same limitation the earlier file-retry fix already ran into).
+  - **A currently-offline peer isn't offered in the picker at all.** Unlike
+    a normal send from the composer, a forward with no visible confirmation
+    that it silently queued would look like it went nowhere, so the list
+    only shows who's actually reachable right now.
+  - **Verified live, message forwarding through the real UI**: three real
+    backend instances (Alice/Bob/Carol) driven through three real headless
+    Chrome windows via the DevTools Protocol, same technique as the
+    delete-for-everyone test. Alice sent Bob a real message, Bob clicked
+    the real ↪ icon and picked Carol from the real forward menu, and
+    Carol's real chat with Bob showed the forwarded text, confirmed both in
+    the DOM and by reading Carol's SQLite file directly afterward. Passed
+    on the first real attempt (the delete-for-everyone test's earlier
+    lessons, fresh databases per run, scope the click to the exact right
+    message, carried straight over).
+  - File forwarding was verified by build/lint only (clean, no new
+    warnings) and by code-path reuse (`api.sendFile` is the exact same call
+    the composer's own attach-file flow already exercises and already had
+    real two-device testing), not by a separate live three-peer
+    file-transfer click-through, a smaller but real gap in this round's
+    verification, worth a dedicated pass if this area gets touched again.
 
 ## Images should render like WhatsApp, not as a generic file icon (2026-09-26)
 
-- [ ] **No inline image preview or tap-to-view in chat.** Confirmed by
-  reading `ConversationPane.jsx`: every file, image or not, renders through
-  the same `FileBubble` as a generic extension-badge icon (PDF/APK/ZIP/MOV
-  style), there's zero image-specific handling anywhere in the file (no
-  `<img>` tag, no mimetype/extension check for image types). Sending a
-  photo today looks identical to sending a zip file. WhatsApp-style would
-  need: (1) detecting image extensions (png/jpg/jpeg/gif/webp/heic) the same
-  way `EXECUTABLE_EXTS`/`EXT_STYLE` already do it for other types, (2) an
-  actual thumbnail rendered inline in the bubble instead of the icon, which
-  needs a way to point an `<img src>` at a local file path from Electron's
-  renderer (likely a custom `agora-file://` protocol registered in
-  `main.cjs`, since raw `file://` access to arbitrary paths is normally
-  blocked and a bare `<img src="C:\...">` won't load), and (3) a full-screen
-  tap-to-view lightbox on click. This is independent of group chat, it
-  applies to the 1:1 chat that already exists today.
+- [x] **No inline image preview or tap-to-view in chat** (fixed
+  2026-09-27). Built as planned: `frontend/src/lib/fileTypes.js` detects
+  image extensions (png/jpg/jpeg/gif/webp/bmp), a new
+  [ImagePreview.jsx](frontend/src/components/ImagePreview.jsx) renders the
+  actual photo inline plus a full-screen tap-to-view lightbox (Escape or
+  click-outside to close). For loading the local file into `<img>`, used a
+  **data: URI over IPC instead of the originally-planned custom
+  `agora-file://` protocol**: `main.cjs`'s new `file:readImageDataUrl`
+  handler reads the file, caps it at 15MB (so a huge image isn't read into
+  memory just for a thumbnail, "Open"/"Save a copy…" still work normally
+  regardless of the cap), and returns a `data:` URI, simpler and safer than
+  a registered protocol (no path-traversal-prone handler needed), and
+  Chromium's default `webSecurity` (never disabled in this app) blocks a
+  plain `file://` src anyway. Falls back to the original extension-badge
+  icon, not a blank gap, if there's no Electron (browser dev mode) or the
+  read genuinely fails. **Real, known limitation**: only works for
+  *received* images, same reason `FileOpenActions`/file-forwarding are also
+  received-only, `saved_path` is never recorded for anything you sent (see
+  `filetransfer.py`). Verified: the exact read/encode/size-cap logic tested
+  directly in real Node against real files (round-trip byte match,
+  uppercase extension, non-image rejection, oversized rejection, missing
+  file), since this piece only runs in Electron's main process and can't be
+  exercised through headless-Chrome UI automation the way the rest of this
+  session was tested.
 
 ## Messages should queue and auto-deliver when the peer comes back online (2026-09-26)
 
@@ -236,19 +272,26 @@ for them. So **text messages already have real store-and-forward** on
 reconnect, no fix needed there. Leaving the rest of this entry scoped down
 to what's actually still missing:
 
-- [ ] **Files have no equivalent auto-retry on reconnect.** Confirmed:
-  `filetransfer.py` has no loop shaped like `_flush_pending_loop`, a failed
-  transfer only ever gets resent via the manual "Retry send" button built
-  earlier today, nothing automatically re-offers it when the peer
-  reappears. Fix would mirror `_flush_pending_loop`'s exact shape: a
-  background loop in `filetransfer.py`, checking visible peers against
-  transfers still `status: "failed"` for them, calling `resend()`
-  automatically. Same existing limitation applies: only works while the
-  original file path is still known to the (still-running) backend
-  process's `_outgoing_paths`.
-  This still needs a decision on backoff/limit so a peer that flaps
-  on/off doesn't get flooded with re-offer attempts, same open question as
-  before.
+- [x] **Files have no equivalent auto-retry on reconnect** (fixed
+  2026-09-27). `FileTransferService` gained the exact `start()`/`stop()`/
+  `_flush_pending_loop()` shape planned here: every 2s, checks every
+  outgoing transfer this process still remembers a path for
+  (`_outgoing_paths`), and calls `resend()` on any still at
+  `status: "failed"` whose peer is now visible to discovery again.
+  Deliberately scoped to `"failed"` only, not `"offered"` (the status a
+  mid-stream drop resets to), since `"offered"` is ambiguous with a
+  transfer still legitimately awaiting its first accept/decline response,
+  resend()-ing one of those would stomp on a real in-flight offer. Same
+  existing limitation as the manual button: only works while this same
+  backend process is still the one that originally sent it. No
+  backoff/limit added, same open question as before, not hit in practice
+  yet. Verified with a new automated test,
+  [_test_file_auto_retry.py](backend/app/_test_file_auto_retry.py) (send
+  fails while the peer's messaging service isn't running, confirmed
+  `status: "failed"`, peer "reconnects", confirmed the transfer completes
+  automatically with byte-identical content and no manual `resend()` call
+  ever made) - all pre-existing backend tests re-verified green after this
+  change too.
 
 ## Known security gaps (documented since Step 7, not yet addressed)
 
@@ -291,27 +334,125 @@ to what's actually still missing:
 
 ## Bigger features, explicitly out of scope until backend work happens
 
-- [ ] **Group chat / group calling, including file + image sharing inside a
-  group.** (2026-09-26: user explicitly wants group audio/video calls, group
-  chat, and file/image sharing within a group, not just 1:1.) The design
-  (screens 4.3/4.4, 10.3, 10.9's 4-person layout) shows this, but the
-  backend has zero concept of a "group": no membership model, no N-way
-  WebRTC signaling (current calling.py is strictly 1:1, one offer/answer
-  pair), no group-scoped message/file storage (messages table is keyed by a
-  single `peer_id`, there's no group_id anywhere). The Chats panel's "+"
-  (new conversation) button is intentionally `disabled` with a tooltip
-  explaining this: that one's honest, not a silent dead end, but it's still
-  blocked on this same missing backend work. Real design questions before
-  starting: how a group is created/named, whether it's a full mesh of
-  WebRTC connections (simplest, but bandwidth/CPU scales badly past ~4-5
-  people on a laptop) or needs an SFU-style relay (real infrastructure this
-  app doesn't have and can't easily get in a serverless LAN design), and
-  whether file/image sharing to a group means sending to every member
-  individually (reuses the existing 1:1 transfer code N times) or a real
-  group-aware protocol.
-- [ ] **Settings screens (6.1–6.5)**: not touched in any pass yet. Design
-  exists (network mode, privacy/security, notifications, about/help), no
-  code at all.
+- [x] **Group chat / group calling, including file + image sharing inside a
+  group** (fixed 2026-09-27). The full design conversation that led here is
+  worth keeping: started from "just build it," worked through why a single
+  relay device would get overloaded, worked through a distributed ring's
+  real drawbacks (latency, one weak link dragging down everyone past it,
+  quality loss per hop, fragile on departure), landed on a genuinely good
+  hybrid idea (small mesh clusters linked by relay, boundary work itself
+  split across members, not one device) - and then made the pragmatic call
+  to **cap group calls at 4 people instead**, since that stays entirely
+  within the mesh's real comfort zone with zero new relay engineering and
+  zero new risk. The cluster/relay design is real and sound, just not
+  needed yet at this scale; if group calls ever need to grow past 4, that
+  conversation (mesh clusters + distributed boundary relaying, not a single
+  overloaded relay) is the one to revisit, not a plain ring.
+
+  **What's built, all with automated tests plus live real-UI verification
+  (headless Chrome, real fake-camera WebRTC, 3 real backend processes):**
+  - **Group creation and membership**: new `groups`/`group_members` tables,
+    [groups.py](backend/app/groups.py)'s `GroupService.create_group()`
+    sends a `group_invite` control message to each invited member over
+    their existing 1:1 connection - no group has a single owner, every
+    member independently ends up with an identical local copy of who's in
+    it. Frontend: a real "New group" flow in
+    [ChatsListPanel.jsx](frontend/src/components/ChatsListPanel.jsx) (name
+    + pick from live peers), groups shown in their own section above 1:1
+    conversations.
+  - **Group text chat, no size limit**: `send_group_message()` fans the
+    same message out to every other member individually, each stores their
+    own copy. [GroupConversationPane.jsx](frontend/src/components/GroupConversationPane.jsx)
+    is the chat view, reached by selecting a group instead of a person.
+    Known, deliberate limitation: no ack/retry/offline-queue for group
+    messages in this first version (unlike 1:1 chat's `_flush_pending_loop`),
+    a member offline at send time just misses it.
+  - **Group calling, full mesh, capped at 4**: no group-aware code in
+    `calling.py` at all - a group call is just several ordinary 1:1 calls
+    happening at once, tagged with a shared `group_call_id`
+    (`CallState`/`CallOfferBody` both gained this one optional field).
+    Mesh formation avoids duplicate connections with a simple rule applied
+    identically on every device: call every other member whose peer_id
+    sorts after your own (same ordering idea `calling.py`'s own 1:1
+    collision tie-break already used). New
+    [useGroupCall.js](frontend/src/hooks/useGroupCall.js) computes each
+    device's own slice of the mesh and manages N simultaneous
+    RTCPeerConnections; any incoming call carrying a `group_call_id` is
+    auto-accepted as a mesh leg rather than shown as a 1:1 popup.
+    `MAX_GROUP_CALL_MEMBERS = 4` is enforced **on the backend**
+    (`start_group_call` raises `ValueError` over the cap), not only as a
+    disabled button, so it can't be bypassed by calling the API directly.
+  - **Group file and image sharing**: "sending a file to a group" is
+    exactly N independent, completely normal 1:1 transfers
+    (`send_group_file()` calls the already-tested
+    `FileTransferService.send_file()` once per other member, own
+    transfer_id, own accept/decline, own resume-on-drop), just tagged with
+    a `group_id` (new nullable column on `files`, added via a real `ALTER
+    TABLE` migration, not just the static schema, see the note below on
+    why that distinction mattered) so every member's own files table knows
+    which group's timeline to show it in. The sender's own view collapses
+    the N per-recipient rows into one bubble with an aggregate status
+    ("sent to 2, 1 delivered"), rather than showing the same file N times.
+    Reuses `SecurityGate`/`FileOpenActions`/`ImagePreview` entirely as-is,
+    none of them were actually 1:1-specific.
+  - **A real schema-migration bug found and fixed along the way**: adding
+    `group_id TEXT` directly inside the `CREATE TABLE IF NOT EXISTS files`
+    statement crashed the backend outright on any device with a pre-
+    existing `agora.db` (confirmed against a real leftover local database,
+    not hypothetically) - `CREATE TABLE IF NOT EXISTS` is a no-op against
+    an already-existing table, so the new column silently never reached
+    it, and the `CREATE INDEX` right after failed against the missing
+    column. Fixed with a real `_migrate()` step using `PRAGMA table_info`
+    + `ALTER TABLE ADD COLUMN`, idempotent, runs on every startup, verified
+    against both a fresh database and the exact old one that first
+    surfaced the bug.
+
+  **Tests**: [backend/app/_test_groups.py](backend/app/_test_groups.py),
+  5 automated tests (invite propagation, message fan-out, mesh-formation
+  math, real 3-way mesh calling via `CallService`, the call cap, group file
+  fan-out), all passing, plus every pre-existing backend suite re-verified
+  green. Separately verified three full times through the real UI via
+  headless Chrome: group chat end-to-end, a real 3-way **video** call
+  reaching genuine `iceConnectionState: "connected"` on every leg with real
+  senders/receivers (confirmed via a small permanent debug hook,
+  `window.__agoraGroupCallDebug()`, left in `useGroupCall.js`), and group
+  image sharing with both recipients independently completing.
+- [x] **Settings screens** (fixed 2026-09-27, scoped down from the design).
+  New [SettingsScreen.jsx](frontend/src/components/SettingsScreen.jsx),
+  reached by clicking the self-avatar bubble at the bottom of `IconRail.jsx`
+  (now a real button, wasn't one before) rather than adding a 5th rail icon.
+  **Deliberately does not copy the design's screens verbatim**: the actual
+  mockup (`ui prompt/Agora.dc.html`, screens 6.1/6.3/6.4/6.5) claims
+  "Encrypted, even at home" with X25519/ChaCha20-Poly1305 badges on the
+  Privacy screen, and "Messages and calls travel... encrypted" on About,
+  both flatly false for this app today, transport encryption is the
+  still-open item right below this one. Built instead:
+  - **Privacy & security**: an honest "Not encrypted yet" status card
+    (same wording as README's Security posture section), a real "Clear all
+    local chat history" action (loops the already-tested
+    `api.clearConversation()` over every conversation), and "Show me in
+    Nearby" / blocking both shown but honestly `disabled` with a reason,
+    not silently missing and not faked as working.
+  - **Notifications**: the real OS `Notification.permission` status plus a
+    real "Allow" button calling `Notification.requestPermission()` (closes
+    the exact gap Step 8's own notes flagged: "nothing requests that
+    permission yet"). No per-category/per-conversation toggles, those
+    aren't wired to anything real and weren't built as decoration.
+  - **About**: the actual app version (`vite.config.js` now injects
+    `__AGORA_VERSION__` from `package.json` at build time, single source of
+    truth instead of a second hardcoded copy that could drift), real GitHub
+    links, and the "how it works" copy corrected to not claim message
+    encryption that doesn't exist.
+  - **Network settings (6.2) was skipped entirely on purpose**: its design
+    (a "sync when internet available" toggle) is exactly the hybrid
+    online/offline mode Phase 4 explicitly and permanently removed, per
+    BUILD_LOG: "6.2/7.1's network-mode-toggle... designs are retired along
+    with it." Building it now would resurrect a decision already made.
+  Verified live through the real UI (headless Chrome via the DevTools
+  Protocol): opened Settings, navigated into all three sub-screens and
+  back, confirmed the honest encryption-status text, the real notification
+  permission text, and the real "version 0.0.0" string all actually render
+  in the running app, not just in the source.
 - [ ] **Android/phone app.** Completely separate project, not started.
   Discussed stack: Flutter (Dart) for one codebase across Android/iOS,
   `nsd`/`multicast_dns` for mDNS discovery matching the desktop's `zeroconf`
@@ -325,10 +466,9 @@ to what's actually still missing:
 - [ ] Search bars in Nearby and Files are visual-only (Files' type-category
   pills and text search do work; the actual search *input* boxes elsewhere
   don't filter anything yet).
-- [ ] Call history has no delete/clear action and no pagination beyond the
-  default 50-row limit. Difficulty: Easy-Moderate, same local delete-by-
-  record shape as the message/conversation deletes above, see the
-  difficulty table under "Missing message actions."
+- [ ] Call history has no pagination beyond the default 50-row limit.
+  (The delete/clear action this line used to also flag is fixed, see
+  "Fixed since this file was created" above, "Clear all" in `CallsScreen.jsx`.)
 - [ ] The bandwidth-sharing throttle during an active call is a fixed
   0.2s-per-chunk delay, not adaptive to actual measured link contention.
 
