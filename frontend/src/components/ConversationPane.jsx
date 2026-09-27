@@ -6,6 +6,8 @@ import FileOpenActions from "./FileOpenActions";
 import ImagePreview from "./ImagePreview";
 import { isImageFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
 import { usePeers } from "../hooks/usePeers";
+import { useGroups } from "../hooks/useGroups";
+import BubbleContextMenu, { useContextMenu } from "./BubbleContextMenu";
 
 function statusGlyph(status) {
   if (status === "delivered" || status === "received") return "✓✓";
@@ -41,6 +43,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   const [gateFile, setGateFile] = useState(null);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const { peers: livePeers } = usePeers();
+  const groups = useGroups();
   const bottomRef = useRef(null);
   const peerIdRef = useRef(peer?.peer_id);
   peerIdRef.current = peer?.peer_id;
@@ -148,23 +151,28 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
     api.clearConversation(peer.peer_id).catch(() => {});
   }
 
-  // Anyone else currently discoverable, excluding this same conversation -
-  // forwarding to a currently-offline peer isn't offered here since there's
-  // no picker feedback for "queued, will send later" yet; unlike a plain
-  // send from the composer, a forward with no visible confirmation that
-  // silently queued would be confusing.
-  const forwardCandidates = livePeers.filter((p) => p.peer_id !== peer.peer_id);
+  // Anyone else currently discoverable, excluding this same conversation,
+  // plus every group this device is in - forwarding to a currently-offline
+  // peer isn't offered here since there's no picker feedback for "queued,
+  // will send later" yet; unlike a plain send from the composer, a forward
+  // with no visible confirmation that silently queued would be confusing.
+  const forwardCandidates = [
+    ...livePeers.filter((p) => p.peer_id !== peer.peer_id).map((p) => ({ id: p.peer_id, name: p.name, kind: "peer" })),
+    ...groups.map((g) => ({ id: g.group_id, name: g.name, kind: "group" })),
+  ];
 
-  function handleForwardMessage(msg, targetPeerId) {
-    api.sendMessage(targetPeerId, msg.body).catch(() => {});
+  function handleForwardMessage(msg, target) {
+    if (target.kind === "group") api.sendGroupMessage(target.id, msg.body).catch(() => {});
+    else api.sendMessage(target.id, msg.body).catch(() => {});
   }
 
-  function handleForwardFile(file, targetPeerId) {
+  function handleForwardFile(file, target) {
     // Only ever offered for a received, completed file - that's the only
     // case with a real local saved_path to re-send from. A file you sent
     // has no path recorded anywhere the frontend can see (see
     // filetransfer.py: saved_path is only ever set on the receiving side).
-    api.sendFile(targetPeerId, file.saved_path).catch(() => {});
+    if (target.kind === "group") api.sendGroupFile(target.id, file.saved_path).catch(() => {});
+    else api.sendFile(target.id, file.saved_path).catch(() => {});
   }
 
   async function sendFileAtPath(path) {
@@ -297,7 +305,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
                   onRetry={() => handleRetryMessage(item.data)}
                   onDelete={(everyone) => handleDeleteMessage(item.data, everyone)}
                   forwardCandidates={forwardCandidates}
-                  onForward={(targetPeerId) => handleForwardMessage(item.data, targetPeerId)}
+                  onForward={(target) => handleForwardMessage(item.data, target)}
                 />
               ) : (
                 <FileBubble
@@ -307,7 +315,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
                   onDecline={() => handleDeclineClick(item.data)}
                   onRetry={() => handleRetryClick(item.data)}
                   forwardCandidates={forwardCandidates}
-                  onForward={(targetPeerId) => handleForwardFile(item.data, targetPeerId)}
+                  onForward={(target) => handleForwardFile(item.data, target)}
                 />
               )}
             </div>
@@ -428,76 +436,23 @@ const pillButtonStyle = {
 function MessageBubble({ msg, onRetry, onDelete, forwardCandidates, onForward }) {
   const sent = msg.direction === "sent";
   const failed = msg.status === "failed";
-  const [menuOpen, setMenuOpen] = useState(false);
   // Messages fresh off a live WS event, or an optimistic just-sent bubble,
   // only have a synthetic local id ("live-"/"pending-") - the real
   // backend msg_id isn't in that event payload at all (see messaging.py's
   // "message" broadcast). Deleting against a synthetic id would delete
   // nothing server-side, and the real row would just reappear on the next
-  // history poll, so the delete affordance only shows once this message
-  // has a real id (within ~2.5s, after the next poll picks it up).
+  // history poll, so the delete option only shows once this message has a
+  // real id (within ~2.5s, after the next poll picks it up) - forwarding
+  // doesn't have this problem, it just resends the already-known body text.
   const isSynthetic = msg.msg_id.startsWith("live-") || msg.msg_id.startsWith("pending-");
-
-  const deleteButton = !isSynthetic && (
-    <div style={{ position: "relative" }}>
-      <button onClick={() => setMenuOpen((v) => !v)} title="Delete" style={deleteGlyphStyle}>
-        🗑
-      </button>
-      {menuOpen && (
-        <div
-          style={{
-            position: "absolute",
-            top: 24,
-            [sent ? "right" : "left"]: 0,
-            zIndex: 20,
-            minWidth: 168,
-            borderRadius: 12,
-            background: "var(--surface)",
-            border: "1px solid var(--border-soft)",
-            boxShadow: "var(--shadow)",
-            padding: 6,
-          }}
-        >
-          <button
-            onClick={() => {
-              setMenuOpen(false);
-              onDelete(false);
-            }}
-            style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, background: "transparent", border: "none", fontSize: 12.5, fontWeight: 600, color: "var(--text-strong)" }}
-          >
-            Delete for me
-          </button>
-          {/* Only ever offered on your own sent message - deleting someone
-              else's message "for everyone" would mean telling them to
-              delete something from their own device, not a real feature. */}
-          {sent && (
-            <button
-              onClick={() => {
-                setMenuOpen(false);
-                onDelete(true);
-              }}
-              style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, background: "transparent", border: "none", fontSize: 12.5, fontWeight: 600, color: "var(--danger)" }}
-            >
-              Delete for everyone
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  );
-
-  const bubbleActions = (
-    <div style={{ display: "flex", gap: 1 }}>
-      {deleteButton}
-      <ForwardMenu candidates={forwardCandidates} onPick={onForward} align={sent ? "right" : "left"} />
-    </div>
-  );
+  const { menuPosition, openContextMenu, closeContextMenu } = useContextMenu();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: sent ? "flex-end" : "flex-start", gap: 4, maxWidth: "58%", alignSelf: sent ? "flex-end" : "flex-start" }}>
       <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
-        {!sent && bubbleActions}
         <div
+          onContextMenu={openContextMenu}
+          title="Right-click for delete/forward"
           style={{
             padding: "11px 15px",
             borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
@@ -511,8 +466,15 @@ function MessageBubble({ msg, onRetry, onDelete, forwardCandidates, onForward })
         >
           {msg.body}
         </div>
-        {sent && bubbleActions}
       </div>
+      <BubbleContextMenu
+        position={menuPosition}
+        onClose={closeContextMenu}
+        candidates={forwardCandidates}
+        onForward={onForward}
+        onDelete={isSynthetic ? undefined : onDelete}
+        canDeleteForEveryone={sent}
+      />
       {sent && !failed && (
         <div style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 500 }}>
           {statusGlyph(msg.status)} {msg.status === "delivered" ? "Seen" : ""}
@@ -526,75 +488,6 @@ function MessageBubble({ msg, onRetry, onDelete, forwardCandidates, onForward })
         >
           ! Failed, tap to retry
         </button>
-      )}
-    </div>
-  );
-}
-
-const deleteGlyphStyle = {
-  flexShrink: 0,
-  width: 22,
-  height: 22,
-  borderRadius: 8,
-  background: "transparent",
-  border: "none",
-  fontSize: 11,
-  opacity: 0.45,
-  color: "var(--text-3)",
-};
-
-// Shared by MessageBubble and FileBubble. Only ever offered for a message
-// (any direction) or a completed, received file - see the two call sites'
-// own comments for why sent files aren't included. Deliberately doesn't
-// list a currently-offline peer: unlike a normal send from the composer,
-// there'd be no visible confirmation that a forward silently queued, which
-// would just look like it went nowhere.
-function ForwardMenu({ candidates, onPick, align = "right" }) {
-  const [open, setOpen] = useState(false);
-  const disabled = candidates.length === 0;
-  return (
-    <div style={{ position: "relative" }}>
-      <button
-        onClick={() => !disabled && setOpen((v) => !v)}
-        disabled={disabled}
-        title={disabled ? "No one else on this network to forward to" : "Forward"}
-        style={{ ...deleteGlyphStyle, opacity: disabled ? 0.22 : 0.45, cursor: disabled ? "default" : "pointer" }}
-      >
-        ↪
-      </button>
-      {open && (
-        <div
-          style={{
-            position: "absolute",
-            top: 24,
-            [align]: 0,
-            zIndex: 20,
-            minWidth: 180,
-            maxHeight: 220,
-            overflowY: "auto",
-            borderRadius: 12,
-            background: "var(--surface)",
-            border: "1px solid var(--border-soft)",
-            boxShadow: "var(--shadow)",
-            padding: 6,
-          }}
-        >
-          <div style={{ padding: "4px 10px 6px", font: '600 10px/1 "IBM Plex Mono", monospace', letterSpacing: "0.08em", color: "var(--text-3)" }}>
-            FORWARD TO
-          </div>
-          {candidates.map((p) => (
-            <button
-              key={p.peer_id}
-              onClick={() => {
-                setOpen(false);
-                onPick(p.peer_id);
-              }}
-              style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, background: "transparent", border: "none", fontSize: 12.5, fontWeight: 600, color: "var(--text-strong)" }}
-            >
-              {p.name}
-            </button>
-          ))}
-        </div>
       )}
     </div>
   );
@@ -616,6 +509,7 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, forwardCandi
   const canForward = !sent && file.status === "completed" && Boolean(file.saved_path);
   const [imagePreviewFailed, setImagePreviewFailed] = useState(false);
   const showImagePreview = isImageFile(file.filename) && Boolean(file.saved_path) && !imagePreviewFailed;
+  const { menuPosition, openContextMenu, closeContextMenu } = useContextMenu();
 
   if (sent && inProgress) {
     const pct = Math.round((progress || 0) * 100);
@@ -645,6 +539,8 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, forwardCandi
   return (
     <div style={{ maxWidth: "58%", alignSelf: sent ? "flex-end" : "flex-start" }}>
       <div
+        onContextMenu={canForward ? openContextMenu : undefined}
+        title={canForward ? "Right-click to forward" : undefined}
         style={{
           padding: "11px 13px",
           borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
@@ -702,15 +598,10 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, forwardCandi
         {file.saved_path && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <FileOpenActions file={file} />
-            {canForward && (
-              <>
-                <div style={{ flex: 1 }} />
-                <ForwardMenu candidates={forwardCandidates} onPick={onForward} align="right" />
-              </>
-            )}
           </div>
         )}
       </div>
+      {canForward && <BubbleContextMenu position={menuPosition} onClose={closeContextMenu} candidates={forwardCandidates} onForward={onForward} />}
     </div>
   );
 }

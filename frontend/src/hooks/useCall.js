@@ -1,46 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, connectEvents } from "../api";
-import { RTC_CONFIG, waitForIceGatheringComplete, getLocalStream } from "../lib/webrtc";
-
-// A plain two-tone ring, synthesized rather than shipped as an audio file -
-// no asset to load, and it plays regardless of window focus (unlike the
-// full-screen overlay, which only helps if the window is actually visible).
-// Electron (Step 6) can add a real system notification/taskbar flash on top
-// of this once it has access to real OS notification APIs.
-function startRingtone() {
-  const ctx = new (window.AudioContext || window.webkitAudioContext)();
-  // Starts "suspended" if the page hasn't registered a user gesture recently
-  // enough for Chrome's autoplay policy - resume() is a no-op if it's
-  // already running, and harmless (silently stays suspended) if the
-  // browser refuses; real usage almost always has plenty of prior clicks
-  // (onboarding, nav) before a call could arrive, so this is a safety net
-  // more than the primary mechanism.
-  ctx.resume().catch(() => {});
-  let stopped = false;
-
-  function ring() {
-    if (stopped) return;
-    for (const delay of [0, 0.3]) {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.frequency.value = 880;
-      gain.gain.setValueAtTime(0.0001, ctx.currentTime + delay);
-      gain.gain.linearRampToValueAtTime(0.15, ctx.currentTime + delay + 0.02);
-      gain.gain.linearRampToValueAtTime(0.0001, ctx.currentTime + delay + 0.22);
-      osc.connect(gain).connect(ctx.destination);
-      osc.start(ctx.currentTime + delay);
-      osc.stop(ctx.currentTime + delay + 0.25);
-    }
-  }
-
-  ring();
-  const interval = setInterval(ring, 1800);
-  return () => {
-    stopped = true;
-    clearInterval(interval);
-    ctx.close().catch(() => {});
-  };
-}
+import { RTC_CONFIG, waitForIceGatheringComplete, getLocalStream, startRingtone } from "../lib/webrtc";
 
 // Owns the entire calling lifecycle at the App level (not inside a specific
 // screen) so an incoming call is caught no matter which tab is open when it
@@ -79,6 +39,14 @@ export function useCall() {
   useEffect(() => {
     const stop = connectEvents((evt) => {
       const current = callRef.current;
+
+      if (evt.type === "call_incoming" && evt.group_call_id) {
+        // A mesh leg of a group call, not a 1:1 call - useGroupCall.js owns
+        // this exclusively. Found by real testing: without this check, the
+        // same event also showed a normal 1:1 incoming-call popup
+        // alongside the real group consent prompt for the exact same call.
+        return;
+      }
 
       if (evt.type === "call_incoming") {
         // If we had our own outgoing call to this peer that just lost the

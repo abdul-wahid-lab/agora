@@ -34,7 +34,19 @@ export default function App() {
   const { peers, refreshing: rescanning, refresh: rescan } = usePeers();
   const conversations = useConversations();
   const groups = useGroups();
-  const { groupCall, muted: groupMuted, cameraOff: groupCameraOff, startGroupCall, hangUpGroupCall, toggleMute: toggleGroupMute, toggleCamera: toggleGroupCamera, registerVideoRef } = useGroupCall(me?.peer_id);
+  const {
+    groupCall,
+    incomingGroupCall,
+    muted: groupMuted,
+    cameraOff: groupCameraOff,
+    startGroupCall,
+    joinIncomingGroupCall,
+    declineIncomingGroupCall,
+    hangUpGroupCall,
+    toggleMute: toggleGroupMute,
+    toggleCamera: toggleGroupCamera,
+    registerVideoRef,
+  } = useGroupCall(me?.peer_id);
   const {
     call,
     error: callError,
@@ -146,7 +158,14 @@ export default function App() {
               onSelectGroup={handleSelectGroup}
             />
             {selectedGroupId ? (
-              <GroupConversationPane group={selectedGroup} onlineCount={selectedGroupOnlineCount} onStartCall={(media) => selectedGroup && startGroupCall(selectedGroup, media)} />
+              <GroupConversationPane
+                group={selectedGroup}
+                onlineCount={selectedGroupOnlineCount}
+                onStartCall={(media) => selectedGroup && startGroupCall(selectedGroup, media)}
+                me={me}
+                livePeers={peers}
+                otherGroups={groups.filter((g) => g.group_id !== selectedGroupId)}
+              />
             ) : (
               <>
                 <ConversationPane peer={selectedPeer} online={selectedPeerOnline} onOpenCall={handleOpenCall} />
@@ -184,11 +203,14 @@ export default function App() {
 
       <GroupCallOverlay
         groupCall={groupCall}
+        incomingGroupCall={incomingGroupCall}
         muted={groupMuted}
         cameraOff={groupCameraOff}
         onToggleMute={toggleGroupMute}
         onToggleCamera={toggleGroupCamera}
         onHangUp={hangUpGroupCall}
+        onJoin={joinIncomingGroupCall}
+        onDecline={declineIncomingGroupCall}
         registerVideoRef={registerVideoRef}
       />
     </div>

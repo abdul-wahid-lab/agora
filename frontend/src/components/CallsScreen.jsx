@@ -34,17 +34,29 @@ function summaryLine(call) {
 // peer picker - placing a call happens from a conversation's Call/Video
 // buttons (see ConversationPane). This just reviews what already happened
 // and offers a one-click callback/redial.
+const PAGE_SIZE = 50;
+
 export default function CallsScreen({ onPlaceCall }) {
   const { peers } = usePeers();
   const [history, setHistory] = useState([]);
   const [filter, setFilter] = useState("all");
+  // Always re-fetches the whole [0, limit) window rather than tracking a
+  // separate offset - "Load more" just grows this, and the existing 4s live
+  // poll keeps refreshing that same growing window (picking up new calls
+  // and status changes) without a second, harder-to-reconcile code path for
+  // "paginated" vs "live" loading.
+  const [limit, setLimit] = useState(PAGE_SIZE);
+  const [loadingMore, setLoadingMore] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     async function load() {
       try {
-        const list = await api.allCallHistory();
-        if (!cancelled) setHistory(list);
+        const list = await api.allCallHistory(limit);
+        if (!cancelled) {
+          setHistory(list);
+          setLoadingMore(false);
+        }
       } catch {
         // ignore - next poll retries
       }
@@ -55,13 +67,24 @@ export default function CallsScreen({ onPlaceCall }) {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [limit]);
+
+  // A full page came back, so there may be older calls beyond this window -
+  // the backend has no separate "total count" endpoint, this is the same
+  // "did we get a full page" signal any offset-based pager relies on.
+  const mayHaveMore = history.length >= limit;
+
+  function handleLoadMore() {
+    setLoadingMore(true);
+    setLimit((l) => l + PAGE_SIZE);
+  }
 
   const peerName = (peerId) => peers.find((p) => p.peer_id === peerId)?.name || "Unknown";
 
   function handleClearAll() {
     if (!window.confirm("Clear your entire call history? This can't be undone.")) return;
     setHistory([]);
+    setLimit(PAGE_SIZE);
     api.clearCallHistory().catch(() => {});
   }
 
@@ -140,6 +163,15 @@ export default function CallsScreen({ onPlaceCall }) {
             </div>
           );
         })}
+        {mayHaveMore && (
+          <button
+            onClick={handleLoadMore}
+            disabled={loadingMore}
+            style={{ padding: "12px 0", background: "transparent", border: "none", borderTop: filtered.length > 0 ? "1px solid var(--divider)" : "none", color: "var(--text-2)", fontSize: 12.5, fontWeight: 600, opacity: loadingMore ? 0.6 : 1 }}
+          >
+            {loadingMore ? "Loading…" : `Load ${PAGE_SIZE} more`}
+          </button>
+        )}
       </div>
 
       <div style={{ display: "flex", gap: 14 }}>

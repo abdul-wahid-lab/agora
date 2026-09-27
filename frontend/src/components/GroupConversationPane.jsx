@@ -5,6 +5,7 @@ import { isImageFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } 
 import SecurityGate from "./SecurityGate";
 import FileOpenActions from "./FileOpenActions";
 import ImagePreview from "./ImagePreview";
+import BubbleContextMenu, { useContextMenu } from "./BubbleContextMenu";
 
 // Must match backend/app/groups.py's MAX_GROUP_CALL_MEMBERS - kept here as
 // a separate constant (not shared config between the two codebases) purely
@@ -47,7 +48,7 @@ function collapseSentCopies(files) {
 // machinery (all already generic, none of it was actually 1:1-specific),
 // group chat only adds the sender-name label and the sent-copy collapsing
 // above - no new transfer protocol, no new safety logic.
-export default function GroupConversationPane({ group, onlineCount, onStartCall }) {
+export default function GroupConversationPane({ group, onlineCount, onStartCall, me, livePeers = [], otherGroups = [] }) {
   const [messages, setMessages] = useState([]);
   const [files, setFiles] = useState([]);
   const [draft, setDraft] = useState("");
@@ -96,6 +97,9 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall 
       const current = groupIdRef.current;
       if (evt.type === "group_message" && evt.group_id === current) {
         setMessages((prev) => (prev.some((m) => m.msg_id === evt.msg_id) ? prev : [...prev, evt]));
+      }
+      if (evt.type === "group_message_deleted" && evt.group_id === current) {
+        setMessages((prev) => prev.filter((m) => m.msg_id !== evt.msg_id));
       }
       if ((evt.type === "file_offer" || evt.type === "file_status") && evt.group_id === current) {
         refreshFiles();
@@ -169,6 +173,33 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall 
     Promise.all(failedTransferIds.map((id) => api.resendFile(id).catch(() => {}))).then(refreshFiles);
   }
 
+  function handleDeleteMessage(msg, everyone) {
+    setMessages((prev) => prev.filter((m) => m.msg_id !== msg.msg_id));
+    api.deleteGroupMessage(group.group_id, msg.msg_id, { everyone }).catch(() => {});
+  }
+
+  // Everyone else on this network plus every other group this device is
+  // in - same shape and same "no currently-offline peer listed" reasoning
+  // as ConversationPane's own forwardCandidates, just also excluding this
+  // group itself (forwarding a message back into its own timeline isn't a
+  // real action).
+  const forwardCandidates = [
+    ...livePeers.map((p) => ({ id: p.peer_id, name: p.name, kind: "peer" })),
+    ...otherGroups.map((g) => ({ id: g.group_id, name: g.name, kind: "group" })),
+  ];
+
+  function handleForwardMessage(msg, target) {
+    if (target.kind === "group") api.sendGroupMessage(target.id, msg.body).catch(() => {});
+    else api.sendMessage(target.id, msg.body).catch(() => {});
+  }
+
+  function handleForwardFile(file, target) {
+    // Same restriction as ConversationPane's own handleForwardFile: only a
+    // received, completed file has a real local saved_path to re-send from.
+    if (target.kind === "group") api.sendGroupFile(target.id, file.saved_path).catch(() => {});
+    else api.sendFile(target.id, file.saved_path).catch(() => {});
+  }
+
   const callDisabled = group.members.length > MAX_GROUP_CALL_MEMBERS;
 
   async function handleStartCall(media) {
@@ -232,12 +263,13 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall 
                 </div>
               )}
               {item.kind === "message" ? (
-                <>
-                  <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-3)", paddingLeft: 2 }}>{item.data.sender_name}</div>
-                  <div style={{ maxWidth: "58%", padding: "11px 15px", borderRadius: "18px 18px 18px 5px", background: "var(--surface)", border: "1px solid var(--border-soft)", fontSize: 14.5, lineHeight: 1.45, wordBreak: "break-word" }}>
-                    {item.data.body}
-                  </div>
-                </>
+                <GroupMessageBubble
+                  msg={item.data}
+                  isMine={item.data.sender_peer_id === me?.peer_id}
+                  onDelete={(everyone) => handleDeleteMessage(item.data, everyone)}
+                  forwardCandidates={forwardCandidates}
+                  onForward={(target) => handleForwardMessage(item.data, target)}
+                />
               ) : (
                 <GroupFileBubble
                   file={item.data}
@@ -245,6 +277,8 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall 
                   onAccept={() => handleAcceptClick(item.data)}
                   onDecline={() => handleDeclineClick(item.data)}
                   onRetry={() => handleRetryClick(item.data)}
+                  forwardCandidates={forwardCandidates}
+                  onForward={(target) => handleForwardFile(item.data, target)}
                 />
               )}
             </div>
@@ -316,6 +350,29 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall 
   );
 }
 
+// Group chat has no left/right "sent vs received" layout the way 1:1 chat
+// does (a group message is never "yours" spatially, only ever attributed by
+// the sender-name label) - right-click anywhere on the bubble opens the
+// same delete/forward context menu ConversationPane's 1:1 bubbles use.
+function GroupMessageBubble({ msg, isMine, onDelete, forwardCandidates, onForward }) {
+  const { menuPosition, openContextMenu, closeContextMenu } = useContextMenu();
+  return (
+    <div style={{ display: "flex", alignItems: "flex-end", gap: 4 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4, maxWidth: "58%" }}>
+        <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-3)", paddingLeft: 2 }}>{msg.sender_name}</div>
+        <div
+          onContextMenu={openContextMenu}
+          title="Right-click for delete/forward"
+          style={{ padding: "11px 15px", borderRadius: "18px 18px 18px 5px", background: "var(--surface)", border: "1px solid var(--border-soft)", fontSize: 14.5, lineHeight: 1.45, wordBreak: "break-word" }}
+        >
+          {msg.body}
+        </div>
+      </div>
+      <BubbleContextMenu position={menuPosition} onClose={closeContextMenu} candidates={forwardCandidates} onForward={onForward} onDelete={onDelete} canDeleteForEveryone={isMine} />
+    </div>
+  );
+}
+
 function AttachMenuItem({ label, onClick }) {
   return (
     <button
@@ -329,7 +386,7 @@ function AttachMenuItem({ label, onClick }) {
   );
 }
 
-function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry }) {
+function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, forwardCandidates, onForward }) {
   const sent = file.direction === "sent";
   const { bg, text } = extStyle(file.filename);
   const isExecutable = EXECUTABLE_EXTS.has((file.filename.split(".").pop() || "").toLowerCase());
@@ -343,11 +400,17 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry }) {
   // Electron, oversized file) falls back to the generic icon row instead of
   // leaving a blank gap where the thumbnail should be.
   const showImage = !sent && isImageFile(file.filename) && Boolean(file.saved_path) && !imagePreviewFailed;
+  // Same restriction as ConversationPane's own canForward: only a received,
+  // completed file has a real local saved_path to re-send from.
+  const canForward = !sent && file.status === "completed" && Boolean(file.saved_path);
+  const { menuPosition, openContextMenu, closeContextMenu } = useContextMenu();
 
   return (
     <div style={{ maxWidth: "58%", alignSelf: sent ? "flex-end" : "flex-start", display: "flex", flexDirection: "column", gap: 4 }}>
       <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-3)", paddingLeft: 2, textAlign: sent ? "right" : "left" }}>{senderName}</div>
       <div
+        onContextMenu={canForward ? openContextMenu : undefined}
+        title={canForward ? "Right-click to forward" : undefined}
         style={{
           padding: "11px 13px",
           borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
@@ -398,8 +461,13 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry }) {
             Retry failed ({failedCount})
           </button>
         )}
-        {!sent && file.saved_path && <FileOpenActions file={file} />}
+        {!sent && file.saved_path && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <FileOpenActions file={file} />
+          </div>
+        )}
       </div>
+      {canForward && <BubbleContextMenu position={menuPosition} onClose={closeContextMenu} candidates={forwardCandidates} onForward={onForward} />}
     </div>
   );
 }

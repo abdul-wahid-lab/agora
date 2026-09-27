@@ -1,6 +1,7 @@
 import { useState } from "react";
 import TitleBar from "./TitleBar";
 import { paletteAt, AVATAR_PALETTE_SIZE, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
+import { useSelfAvatarPhoto } from "../hooks/useSelfAvatarPhoto";
 
 // Matches design screen 10.1 exactly: a single split-panel window, not a
 // multi-step wizard. Left panel is static messaging (hero line, 3-step
@@ -10,6 +11,7 @@ import { paletteAt, AVATAR_PALETTE_SIZE, SELF_AVATAR_INDEX_KEY } from "../lib/av
 export default function Onboarding({ onComplete }) {
   const [name, setName] = useState("");
   const [avatarIndex, setAvatarIndex] = useState(0);
+  const { photo, setPhoto, hasElectron } = useSelfAvatarPhoto();
   const trimmed = name.trim();
   const deviceSlug = (trimmed || "device").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "");
   const avatar = paletteAt(avatarIndex);
@@ -17,6 +19,22 @@ export default function Onboarding({ onComplete }) {
   function handleContinue() {
     localStorage.setItem(SELF_AVATAR_INDEX_KEY, String(avatarIndex));
     onComplete(trimmed);
+  }
+
+  async function handleChoosePhoto() {
+    const path = await window.electronAPI.pickFile("photo");
+    if (!path) return;
+    const dataUrl = await window.electronAPI.setAvatarPhoto(path);
+    if (!dataUrl) {
+      window.alert("Couldn't use that image (too large, or not a supported photo format).");
+      return;
+    }
+    setPhoto(dataUrl);
+  }
+
+  async function handleRemovePhoto() {
+    await window.electronAPI.clearAvatarPhoto();
+    setPhoto(null);
   }
 
   return (
@@ -59,23 +77,33 @@ export default function Onboarding({ onComplete }) {
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
-            <div style={{ width: 96, height: 96, flexShrink: 0, borderRadius: 99, background: avatar.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Instrument Serif, serif", fontSize: 38, color: avatar.text }}>
-              {trimmed[0]?.toUpperCase() || "?"}
+            <div style={{ width: 96, height: 96, flexShrink: 0, borderRadius: 99, overflow: "hidden", background: photo ? "var(--surface-2)" : avatar.bg, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Instrument Serif, serif", fontSize: 38, color: avatar.text }}>
+              {photo ? <img src={photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : trimmed[0]?.toUpperCase() || "?"}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
               <button
-                disabled
-                title="Not built yet: no way to pick/store a custom photo, use Shuffle avatar for now"
-                style={{ padding: "9px 15px", borderRadius: 11, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 13, fontWeight: 600, color: "var(--text-3)", width: "fit-content", opacity: 0.6, cursor: "not-allowed" }}
+                onClick={handleChoosePhoto}
+                disabled={!hasElectron}
+                title={hasElectron ? undefined : "Only available in the desktop app"}
+                style={{ padding: "9px 15px", borderRadius: 11, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 13, fontWeight: 600, color: hasElectron ? "var(--text-strong)" : "var(--text-3)", width: "fit-content", opacity: hasElectron ? 1 : 0.6, cursor: hasElectron ? "pointer" : "not-allowed" }}
               >
-                Choose photo… (coming soon)
+                {photo ? "Change photo…" : "Choose photo…"}
               </button>
-              <button
-                onClick={() => setAvatarIndex((i) => (i + 1) % AVATAR_PALETTE_SIZE)}
-                style={{ padding: "9px 15px", borderRadius: 11, background: "#2a2320", color: "var(--surface)", fontSize: 13, fontWeight: 600, width: "fit-content", border: "none" }}
-              >
-                Shuffle avatar
-              </button>
+              {photo ? (
+                <button
+                  onClick={handleRemovePhoto}
+                  style={{ padding: "9px 15px", borderRadius: 11, background: "transparent", border: "1px solid var(--border)", color: "var(--danger)", fontSize: 13, fontWeight: 600, width: "fit-content" }}
+                >
+                  Remove photo
+                </button>
+              ) : (
+                <button
+                  onClick={() => setAvatarIndex((i) => (i + 1) % AVATAR_PALETTE_SIZE)}
+                  style={{ padding: "9px 15px", borderRadius: 11, background: "#2a2320", color: "var(--surface)", fontSize: 13, fontWeight: 600, width: "fit-content", border: "none" }}
+                >
+                  Shuffle avatar
+                </button>
+              )}
             </div>
           </div>
 

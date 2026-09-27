@@ -9,6 +9,14 @@ not just that the flag gets read - the whole point is that a transfer
 during an active call visibly slows down compared to the same transfer
 outside a call.
 
+Also covers `throttle_sleep_seconds`, the adaptive part added on top of the
+original flat pause: a deterministic unit test on the pure formula (no real
+sockets involved) rather than an integration test that tries to induce real
+TCP backpressure, which would be flaky across OS/environment - the formula
+itself is what's under test here, the fact that _stream_to_peer feeds it a
+real measured write+drain latency in production is covered by reading
+filetransfer.py directly, not re-derived through a timing-sensitive test.
+
 Not a CLI tool - run directly:
     python -m app._test_bandwidth_sharing
 """
@@ -23,7 +31,7 @@ from pathlib import Path
 
 from app.calling import CallService
 from app.discovery import PeerDiscovery
-from app.filetransfer import FileTransferService, IncomingFileOffer
+from app.filetransfer import BASE_THROTTLE_SLEEP, MAX_EXTRA_THROTTLE_SLEEP, FileTransferService, IncomingFileOffer, throttle_sleep_seconds
 from app.messaging import MessagingService
 from app.storage import MessageStore
 
@@ -47,7 +55,25 @@ async def send_and_time(ft_sender, disc_receiver, path, on_offer_setter, receive
     return time.monotonic() - start
 
 
+def test_throttle_sleep_seconds_is_adaptive() -> None:
+    no_contention = throttle_sleep_seconds(0.0)
+    assert no_contention == BASE_THROTTLE_SLEEP, f"zero measured latency should give just the flat baseline, got {no_contention}"
+
+    some_contention = throttle_sleep_seconds(0.05)
+    assert some_contention > BASE_THROTTLE_SLEEP, "measurable write+drain latency should add real backoff on top of the baseline"
+
+    more_contention = throttle_sleep_seconds(0.2)
+    assert more_contention > some_contention, "higher measured latency should back off more, not the same fixed amount regardless"
+
+    extreme_contention = throttle_sleep_seconds(10.0)
+    assert extreme_contention == BASE_THROTTLE_SLEEP + MAX_EXTRA_THROTTLE_SLEEP, "an extreme measured latency should hit the cap, not scale unbounded"
+
+    print(f"TEST (throttle_sleep_seconds scales with real measured write latency: {no_contention:.2f}s -> {some_contention:.2f}s -> {more_contention:.2f}s -> {extreme_contention:.2f}s, capped): PASS")
+
+
 async def main() -> None:
+    test_throttle_sleep_seconds_is_adaptive()
+
     tmp = Path(tempfile.mkdtemp(prefix="agora_bw_test_"))
     print(f"scratch dir: {tmp}")
 

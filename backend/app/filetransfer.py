@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,6 +42,32 @@ from app.storage import FileRecord, MessageStore
 
 CHUNK_SIZE = 256 * 1024
 EXECUTABLE_EXTS = {".apk", ".exe", ".msi", ".bat", ".cmd", ".com", ".sh", ".jar", ".appimage", ".ps1"}
+
+# Bandwidth-sharing throttle (see _stream_to_peer's is_call_active branch).
+# BASE_THROTTLE_SLEEP is a flat policy floor: whenever a call is active,
+# back off by at least this much per chunk, regardless of anything
+# measured, so call quality always gets *some* deliberate headroom. On top
+# of that floor, ADAPTIVE_FACTOR scales in a real measured signal: how long
+# this same TCP socket's write+drain just took. writer.drain() only returns
+# once the OS is ready to accept more data, so an elevated drain time is a
+# genuine (not fabricated) sign that something, the call's own media
+# traffic included, is actually competing for the link right now - the
+# transfer backs off further under real observed contention instead of
+# pausing the same fixed amount whether the link is lightly or heavily
+# loaded. This is still not a real bandwidth allocator (no traffic shaping,
+# no per-flow guarantee, and this process never sees the call's own RTP
+# stream directly, since WebRTC media flows browser-to-browser and never
+# through this backend), it's a proxy signal from this device's own send
+# path, not a literal measurement of the call's bandwidth. MAX_EXTRA
+# caps the top-up so one unusually slow chunk can't stall a transfer
+# indefinitely.
+BASE_THROTTLE_SLEEP = 0.2
+ADAPTIVE_FACTOR = 4.0
+MAX_EXTRA_THROTTLE_SLEEP = 1.0
+
+
+def throttle_sleep_seconds(write_elapsed: float) -> float:
+    return BASE_THROTTLE_SLEEP + min(MAX_EXTRA_THROTTLE_SLEEP, write_elapsed * ADAPTIVE_FACTOR)
 
 
 @dataclass
@@ -228,19 +255,19 @@ class FileTransferService:
                     chunk = f.read(CHUNK_SIZE)
                     if not chunk:
                         break
+                    write_start = time.monotonic()
                     writer.write(chunk)
                     await writer.drain()
+                    write_elapsed = time.monotonic() - write_start
                     sent += len(chunk)
                     if self.on_progress:
                         self.on_progress(transfer_id, sent, total_size)
                     if self.is_call_active():
                         # Throttle, don't stop - a call in progress means the
                         # LAN link matters more for voice/video than transfer
-                        # speed. This isn't a real bandwidth allocator (no
-                        # traffic shaping, no per-flow guarantee), just a
-                        # deliberate pause between chunks so a large transfer
-                        # backs off and leaves more of the link to the call.
-                        await asyncio.sleep(0.2)
+                        # speed. See throttle_sleep_seconds's own comment for
+                        # why write_elapsed is a real, not fabricated, signal.
+                        await asyncio.sleep(throttle_sleep_seconds(write_elapsed))
         finally:
             writer.close()
             await writer.wait_closed()
