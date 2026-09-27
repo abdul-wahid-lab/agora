@@ -386,6 +386,18 @@ class MessageStore:
 
         await asyncio.to_thread(self._run, _op)
 
+    async def list_known_peers(self) -> list[dict]:
+        """Every peer this device has ever exchanged a hello with, regardless
+        of whether there's any message history - the Network menu's "Known
+        Peers" view and contact export both need this broader list, unlike
+        list_conversations() which only returns peers with real messages."""
+
+        def _op(conn: sqlite3.Connection) -> list[dict]:
+            rows = conn.execute("SELECT peer_id, name, last_seen FROM known_peers ORDER BY last_seen DESC").fetchall()
+            return [{"peer_id": r[0], "name": r[1], "last_seen": r[2]} for r in rows]
+
+        return await asyncio.to_thread(self._run, _op)
+
     async def save_call_start(self, call_id: str, peer_id: str, direction: str, media: str, started_at: Optional[float] = None) -> None:
         started_at = started_at if started_at is not None else time.time()
 

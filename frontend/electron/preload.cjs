@@ -26,6 +26,15 @@ contextBridge.exposeInMainWorld("electronAPI", {
   getAvatarPhoto: () => ipcRenderer.invoke("profile:getAvatarPhoto"),
   setAvatarPhoto: (filePath) => ipcRenderer.invoke("profile:setAvatarPhoto", filePath),
   clearAvatarPhoto: () => ipcRenderer.invoke("profile:clearAvatarPhoto"),
+  openDownloadsFolder: () => ipcRenderer.invoke("app:openDownloadsFolder"),
+  saveTextFile: (content, suggestedName, filters) => ipcRenderer.invoke("file:saveText", { content, suggestedName, filters }),
+  readTextFile: (filters) => ipcRenderer.invoke("file:readText", filters),
+  zoomIn: () => ipcRenderer.invoke("app:zoomIn"),
+  zoomOut: () => ipcRenderer.invoke("app:zoomOut"),
+  zoomReset: () => ipcRenderer.invoke("app:zoomReset"),
+  setAlwaysOnTop: (value) => ipcRenderer.invoke("app:setAlwaysOnTop", value),
+  getAlwaysOnTop: () => ipcRenderer.invoke("app:getAlwaysOnTop"),
+  openExternal: (url) => ipcRenderer.invoke("shell:openExternal", url),
 });
 
 // Tells api.js which port main.cjs actually spawned the backend on, so the

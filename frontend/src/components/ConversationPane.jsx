@@ -32,7 +32,7 @@ function dayLabel(ts) {
 // stores (see storage.py) but read as one timeline here, sorted by time -
 // that interleaving is what the design shows, even though the underlying
 // APIs stay separate.
-export default function ConversationPane({ peer, online = true, onOpenCall, emptyState }) {
+export default function ConversationPane({ peer, online = true, onOpenCall, emptyState, searchOpen = false, onCloseSearch }) {
   const [messages, setMessages] = useState([]);
   const [files, setFiles] = useState([]);
   const [progressByTransfer, setProgressByTransfer] = useState({});
@@ -42,7 +42,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
   const hasNativePicker = Boolean(window.electronAPI?.pickFile);
   const [gateFile, setGateFile] = useState(null);
-  const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
   const { peers: livePeers } = usePeers();
   const groups = useGroups();
   const conversations = useConversations();
@@ -146,13 +146,6 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
     api.deleteMessage(msg.msg_id, { everyone, peerId: peer.peer_id }).catch(() => {});
   }
 
-  function handleClearConversation() {
-    setHeaderMenuOpen(false);
-    if (!window.confirm(`Clear your entire chat history with ${peer.name}? This only clears it on this device, it can't be undone.`)) return;
-    setMessages([]);
-    api.clearConversation(peer.peer_id).catch(() => {});
-  }
-
   // Anyone this device has ever talked to or can currently see, excluding
   // this same conversation, plus every group this device is in. Offline
   // peers are included on purpose: forwarding just calls the same
@@ -236,10 +229,13 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   }
 
   const { bg, text } = paletteFor(peer.peer_id);
+  const query = searchOpen ? searchQuery.trim().toLowerCase() : "";
   const timeline = [
     ...messages.map((m) => ({ kind: "message", ts: m.ts, data: m })),
     ...files.map((f) => ({ kind: "file", ts: f.ts, data: f })),
-  ].sort((a, b) => a.ts - b.ts);
+  ]
+    .filter((item) => !query || (item.kind === "message" ? item.data.body.toLowerCase().includes(query) : item.data.filename.toLowerCase().includes(query)))
+    .sort((a, b) => a.ts - b.ts);
 
   let lastDay = null;
 
@@ -271,31 +267,35 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
           <button onClick={() => onOpenCall(peer.peer_id, "video")} disabled={!online} title={online ? undefined : "Not reachable right now"} style={{ ...pillButtonStyle, opacity: online ? 1 : 0.5 }}>
             Video
           </button>
-          <div style={{ position: "relative" }}>
-            <button
-              onClick={() => setHeaderMenuOpen((v) => !v)}
-              style={{ width: 34, height: 34, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, color: "var(--text-muted)" }}
-            >
-              ⋯
-            </button>
-            {headerMenuOpen && (
-              <div style={{ position: "absolute", top: 40, right: 0, zIndex: 20, minWidth: 200, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow)", padding: 6 }}>
-                <button
-                  onClick={handleClearConversation}
-                  style={{ width: "100%", textAlign: "left", padding: "9px 11px", borderRadius: 9, background: "transparent", border: "none", fontSize: 13, fontWeight: 600, color: "var(--danger)" }}
-                >
-                  Clear chat history
-                </button>
-              </div>
-            )}
-          </div>
         </div>
       </div>
+
+      {searchOpen && (
+        <div style={{ flex: "0 0 auto", padding: "10px 20px", borderBottom: "1px solid var(--divider)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 10 }}>
+          <input
+            autoFocus
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Escape" && onCloseSearch?.()}
+            placeholder={`Search in conversation with ${peer.name}`}
+            style={{ flex: 1, height: 36, borderRadius: 11, border: "1px solid var(--border)", padding: "0 13px", fontSize: 13.5 }}
+          />
+          <button
+            onClick={() => {
+              setSearchQuery("");
+              onCloseSearch?.();
+            }}
+            style={{ width: 34, height: 34, borderRadius: 11, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 13, color: "var(--text-muted)" }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "18px 24px", display: "flex", flexDirection: "column", gap: 11 }}>
         {timeline.length === 0 && (
           <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-3)", fontSize: 14 }}>
-            No messages yet - say hello.
+            {query ? `No messages match "${searchQuery.trim()}".` : "No messages yet - say hello."}
           </div>
         )}
         {timeline.map((item) => {

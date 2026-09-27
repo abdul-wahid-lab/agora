@@ -98,9 +98,15 @@ function saveIdentity(identity) {
   }
 }
 
+// Hoisted to module scope (not just local to startBackend) so the
+// app:openDownloadsFolder handler below can reach the real path without
+// re-deriving it or waiting on the backend to report it back.
+let downloadsDirPath = null;
+
 function startBackend() {
   const userData = app.getPath("userData");
   const downloadsDir = path.join(userData, "downloads");
+  downloadsDirPath = downloadsDir;
   fs.mkdirSync(downloadsDir, { recursive: true });
 
   const identity = loadOrCreateIdentity();
@@ -371,6 +377,84 @@ ipcMain.handle("profile:clearAvatarPhoto", async () => {
     delete identity.avatarFile;
     saveIdentity(identity);
   }
+  return true;
+});
+
+// Menu-bar support (File/Conversation/Network/View menus) - each of these
+// wraps one real, already-standard Electron/Node capability, no new
+// concepts invented just to fill a menu.
+
+// "Open Received Files Folder" - shell.openPath opens a directory in the
+// OS file manager just as well as it opens a single file with its default
+// app (used elsewhere for "Open" on a received file).
+ipcMain.handle("app:openDownloadsFolder", () => {
+  if (!downloadsDirPath) return "no downloads folder yet";
+  return shell.openPath(downloadsDirPath);
+});
+
+// Generic text file save/read, for Export/Import Contacts (JSON) and Export
+// Conversation (.txt) - the existing file:saveAs handler only ever copies
+// an existing file on disk, it can't write fresh text content.
+ipcMain.handle("file:saveText", async (_e, { content, suggestedName, filters }) => {
+  if (!mainWindow) return null;
+  const result = await dialog.showSaveDialog(mainWindow, { defaultPath: suggestedName, filters: filters || [{ name: "All Files", extensions: ["*"] }] });
+  if (result.canceled || !result.filePath) return null;
+  await fs.promises.writeFile(result.filePath, content, "utf8");
+  return result.filePath;
+});
+
+ipcMain.handle("file:readText", async (_e, filters) => {
+  if (!mainWindow) return null;
+  const result = await dialog.showOpenDialog(mainWindow, { properties: ["openFile"], filters: filters || [{ name: "All Files", extensions: ["*"] }] });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  try {
+    return await fs.promises.readFile(result.filePaths[0], "utf8");
+  } catch (e) {
+    logToFile(`failed to read text file: ${e.stack || e}`);
+    return null;
+  }
+});
+
+// View menu: zoom and always-on-top are both real, standard BrowserWindow
+// capabilities - webContents.getZoomLevel()/setZoomLevel() and
+// win.setAlwaysOnTop(), nothing app-specific to build underneath them.
+const ZOOM_STEP = 0.5;
+const ZOOM_MIN = -4; // roughly 50% - Electron's zoom levels are not linear percentages
+const ZOOM_MAX = 6; // roughly 300%
+
+ipcMain.handle("app:zoomIn", () => {
+  if (!mainWindow) return null;
+  const level = Math.min(ZOOM_MAX, mainWindow.webContents.getZoomLevel() + ZOOM_STEP);
+  mainWindow.webContents.setZoomLevel(level);
+  return level;
+});
+
+ipcMain.handle("app:zoomOut", () => {
+  if (!mainWindow) return null;
+  const level = Math.max(ZOOM_MIN, mainWindow.webContents.getZoomLevel() - ZOOM_STEP);
+  mainWindow.webContents.setZoomLevel(level);
+  return level;
+});
+
+ipcMain.handle("app:zoomReset", () => {
+  if (!mainWindow) return null;
+  mainWindow.webContents.setZoomLevel(0);
+  return 0;
+});
+
+ipcMain.handle("app:setAlwaysOnTop", (_e, value) => {
+  mainWindow?.setAlwaysOnTop(Boolean(value));
+  return Boolean(value);
+});
+
+ipcMain.handle("app:getAlwaysOnTop", () => Boolean(mainWindow?.isAlwaysOnTop()));
+
+// Help menu's GitHub links - shell.openExternal opens the real default
+// browser, never inside the app's own window (which has no address bar or
+// way back anyway).
+ipcMain.handle("shell:openExternal", (_e, url) => {
+  if (typeof url !== "string" || !/^https:\/\/github\.com\//.test(url)) return false;
+  shell.openExternal(url);
   return true;
 });
 

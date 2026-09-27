@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, connectEvents } from "../api";
 import { RTC_CONFIG, waitForIceGatheringComplete, getLocalStream, startRingtone } from "../lib/webrtc";
+import { isPeerMuted } from "../lib/mute";
 
 // Owns the entire calling lifecycle at the App level (not inside a specific
 // screen) so an incoming call is caught no matter which tab is open when it
@@ -87,7 +88,7 @@ export function useCall() {
       flip = !flip;
     }, 1000);
 
-    if (document.hidden && typeof Notification !== "undefined" && Notification.permission === "granted") {
+    if (document.hidden && typeof Notification !== "undefined" && Notification.permission === "granted" && !isPeerMuted(call.peerId)) {
       try {
         new Notification("Agora", { body: `Incoming ${call.media} call` });
       } catch {
