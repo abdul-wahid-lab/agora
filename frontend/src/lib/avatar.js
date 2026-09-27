@@ -14,6 +14,17 @@ export function paletteFor(peerId) {
   return AVATAR_PALETTE[hash % AVATAR_PALETTE.length];
 }
 
+// Used for the *local* device's own self-avatar (onboarding preview,
+// IconRail's bottom bubble), which - unlike paletteFor - isn't derived from
+// an identity, it's a plain user choice. Note this can only ever change how
+// you see your own avatar in your own app: other peers derive your color by
+// calling paletteFor on your peer_id themselves, which this never touches.
+export const AVATAR_PALETTE_SIZE = AVATAR_PALETTE.length;
+export const SELF_AVATAR_INDEX_KEY = "agora.avatarIndex";
+export function paletteAt(index) {
+  return AVATAR_PALETTE[((index % AVATAR_PALETTE.length) + AVATAR_PALETTE.length) % AVATAR_PALETTE.length];
+}
+
 export function colorFor(peerId) {
   return paletteFor(peerId).bg;
 }

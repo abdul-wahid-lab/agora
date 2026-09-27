@@ -82,3 +82,10 @@ button {
 @keyframes agSpin {
   to { transform: rotate(360deg); }
 }
+/* Nearby tab's scan radar (ScanRadar.jsx) caption text, a soft breathing
+   fade rather than agBlink's hard on/off, since it's ambient rather than
+   an urgent cursor-style blink. */
+@keyframes agFade {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}

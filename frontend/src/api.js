@@ -29,6 +29,9 @@ export const api = {
   conversations: () => request("/conversations"),
   sendMessage: (peerId, body) =>
     request("/messages", { method: "POST", body: JSON.stringify({ peer_id: peerId, body }) }),
+  deleteMessage: (msgId, { everyone = false, peerId } = {}) =>
+    request(`/messages/${msgId}?everyone=${everyone}${peerId ? `&peer_id=${peerId}` : ""}`, { method: "DELETE" }),
+  clearConversation: (peerId) => request(`/conversations/${peerId}`, { method: "DELETE" }),
   files: (peerId) => request(`/files/${peerId}`),
   allFiles: () => request("/files"),
   sendFile: (peerId, path) =>
@@ -42,6 +45,7 @@ export const api = {
   callEnd: (callId, reason = "ended") => request(`/calls/${callId}/end`, { method: "POST", body: JSON.stringify({ reason }) }),
   callHistory: (peerId) => request(`/calls/history/${peerId}`),
   allCallHistory: () => request("/calls/history"),
+  clearCallHistory: () => request("/calls/history", { method: "DELETE" }),
 };
 
 // Live event stream (message/peer_joined/peer_left/file_offer/file_status).

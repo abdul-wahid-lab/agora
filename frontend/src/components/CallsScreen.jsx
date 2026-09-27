@@ -59,6 +59,12 @@ export default function CallsScreen({ onPlaceCall }) {
 
   const peerName = (peerId) => peers.find((p) => p.peer_id === peerId)?.name || "Unknown";
 
+  function handleClearAll() {
+    if (!window.confirm("Clear your entire call history? This can't be undone.")) return;
+    setHistory([]);
+    api.clearCallHistory().catch(() => {});
+  }
+
   const filtered = history.filter((c) => {
     if (filter === "missed") return c.status === "missed" || c.status === "collision";
     return true;
@@ -93,6 +99,14 @@ export default function CallsScreen({ onPlaceCall }) {
               {f}
             </button>
           ))}
+          {history.length > 0 && (
+            <button
+              onClick={handleClearAll}
+              style={{ padding: "8px 13px", borderRadius: 11, background: "var(--surface)", border: "1px solid var(--border)", color: "var(--danger)", fontSize: 12.5, fontWeight: 600 }}
+            >
+              Clear all
+            </button>
+          )}
         </div>
       </div>
 
@@ -134,7 +148,7 @@ export default function CallsScreen({ onPlaceCall }) {
           <div className="serif" style={{ fontSize: 30, lineHeight: 1 }}>
             {totalHours > 0 ? `${totalHours} h ${totalMins} m` : `${totalMins} m`}
           </div>
-          <div style={{ fontSize: 12.5, color: "var(--text-2)" }}>All of it over the local network — zero internet bandwidth used.</div>
+          <div style={{ fontSize: 12.5, color: "var(--text-2)" }}>All of it over the local network, zero internet bandwidth used.</div>
         </div>
         <div style={{ flex: 1, padding: 16, borderRadius: 18, background: "var(--surface-2)", display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ font: '600 10.5px/1 "IBM Plex Mono", monospace', letterSpacing: "0.1em", color: "var(--text-3)" }}>CALLS</div>
