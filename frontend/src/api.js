@@ -39,13 +39,21 @@ export const api = {
   acceptFile: (transferId) => request(`/files/${transferId}/accept`, { method: "POST" }),
   declineFile: (transferId) => request(`/files/${transferId}/decline`, { method: "POST" }),
   resendFile: (transferId) => request(`/files/${transferId}/resend`, { method: "POST" }),
-  callOffer: (peerId, sdp, media) => request("/calls/offer", { method: "POST", body: JSON.stringify({ peer_id: peerId, sdp, media }) }),
+  callOffer: (peerId, sdp, media, groupCallId) =>
+    request("/calls/offer", { method: "POST", body: JSON.stringify({ peer_id: peerId, sdp, media, group_call_id: groupCallId }) }),
   callAnswer: (callId, sdp) => request(`/calls/${callId}/answer`, { method: "POST", body: JSON.stringify({ sdp }) }),
   callIce: (callId, candidate) => request(`/calls/${callId}/ice`, { method: "POST", body: JSON.stringify({ candidate }) }),
   callEnd: (callId, reason = "ended") => request(`/calls/${callId}/end`, { method: "POST", body: JSON.stringify({ reason }) }),
   callHistory: (peerId) => request(`/calls/history/${peerId}`),
   allCallHistory: () => request("/calls/history"),
   clearCallHistory: () => request("/calls/history", { method: "DELETE" }),
+  createGroup: (name, members) => request("/groups", { method: "POST", body: JSON.stringify({ name, members }) }),
+  listGroups: () => request("/groups"),
+  sendGroupMessage: (groupId, body) => request(`/groups/${groupId}/messages`, { method: "POST", body: JSON.stringify({ body }) }),
+  groupHistory: (groupId) => request(`/groups/${groupId}/messages`),
+  startGroupCall: (groupId, media) => request(`/groups/${groupId}/call`, { method: "POST", body: JSON.stringify({ media }) }),
+  sendGroupFile: (groupId, path) => request(`/groups/${groupId}/files`, { method: "POST", body: JSON.stringify({ path }) }),
+  groupFiles: (groupId) => request(`/groups/${groupId}/files`),
 };
 
 // Live event stream (message/peer_joined/peer_left/file_offer/file_status).

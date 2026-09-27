@@ -91,7 +91,9 @@ export default function IconRail({ active, onSelect, selfInitial }) {
           </button>
         );
       })}
-      <div
+      <button
+        onClick={() => onSelect("settings")}
+        title="Settings"
         style={{
           marginTop: "auto",
           width: 40,
@@ -104,10 +106,12 @@ export default function IconRail({ active, onSelect, selfInitial }) {
           fontFamily: "Instrument Serif, serif",
           fontSize: 18,
           color: selfAvatar.text,
+          border: active === "settings" ? "2px solid var(--accent)" : "2px solid transparent",
+          padding: 0,
         }}
       >
         {selfInitial || "?"}
-      </div>
+      </button>
     </aside>
   );
 }

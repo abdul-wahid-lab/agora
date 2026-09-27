@@ -1,29 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, connectEvents } from "../api";
-
-// No STUN/TURN servers - by design (see backend/app/calling.py). Both peers
-// are always on the same subnet, so only local host ICE candidates are ever
-// needed, and there's never a NAT to traverse.
-const RTC_CONFIG = { iceServers: [] };
-
-// Non-trickle ICE for this first pass: wait for gathering to finish before
-// sending the offer/answer, so the SDP already contains every candidate and
-// the existing call_ice relay isn't required for basic connectivity to work.
-// Simpler to get right than trickling candidates through separate messages;
-// on a LAN, gathering only host candidates is fast anyway. See BUILD_LOG.
-function waitForIceGatheringComplete(pc) {
-  if (pc.iceGatheringState === "complete") return Promise.resolve();
-  return new Promise((resolve) => {
-    function check() {
-      if (pc.iceGatheringState === "complete") {
-        pc.removeEventListener("icegatheringstatechange", check);
-        resolve();
-      }
-    }
-    pc.addEventListener("icegatheringstatechange", check);
-    setTimeout(resolve, 3000); // safety net if gathering ever stalls
-  });
-}
+import { RTC_CONFIG, waitForIceGatheringComplete, getLocalStream } from "../lib/webrtc";
 
 // A plain two-tone ring, synthesized rather than shipped as an audio file -
 // no asset to load, and it plays regardless of window focus (unlike the
@@ -201,34 +178,6 @@ export function useCall() {
       }
     };
     return pc;
-  }
-
-  // Some Windows laptops expose a second "camera" purely for Windows Hello
-  // face login (infrared) alongside the real one - it enumerates like any
-  // other video device, but outside Hello's own IR-illuminated face-scan it
-  // just produces solid black. `getUserMedia({video: true})` with no device
-  // preference has no way to know that and can end up grabbing it first.
-  // Prefer whichever enumerated camera doesn't look IR-labeled; if there's
-  // only one camera, or labels aren't available yet, this is a no-op and
-  // falls back to the exact previous unconstrained behavior.
-  async function pickCameraDeviceId() {
-    try {
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const cameras = devices.filter((d) => d.kind === "videoinput");
-      if (cameras.length <= 1) return undefined;
-      const nonIr = cameras.filter((d) => !/infrared|\bir\b|hello/i.test(d.label));
-      return (nonIr[0] || cameras[0]).deviceId || undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  async function getLocalStream(media) {
-    const videoDeviceId = media === "video" ? await pickCameraDeviceId() : undefined;
-    return navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: media !== "video" ? false : videoDeviceId ? { deviceId: { exact: videoDeviceId } } : true,
-    });
   }
 
   async function placeCall(peerId, media) {

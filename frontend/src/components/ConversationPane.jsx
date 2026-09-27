@@ -3,12 +3,9 @@ import { api, connectEvents } from "../api";
 import { paletteFor, initials } from "../lib/avatar";
 import SecurityGate from "./SecurityGate";
 import FileOpenActions from "./FileOpenActions";
-
-function formatSize(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
+import ImagePreview from "./ImagePreview";
+import { isImageFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
+import { usePeers } from "../hooks/usePeers";
 
 function statusGlyph(status) {
   if (status === "delivered" || status === "received") return "✓✓";
@@ -24,22 +21,6 @@ function dayLabel(ts) {
   const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   return isToday ? `TODAY · ${time}` : `${d.toLocaleDateString([], { month: "short", day: "numeric" })} · ${time}`;
 }
-
-const EXT_STYLE = {
-  pdf: { bg: "#f3e8dd", text: "#c2562a" },
-  apk: { bg: "#e8eee4", text: "#4c6b43" },
-  zip: { bg: "#fbe9d7", text: "#b07a2a" },
-  mov: { bg: "#f6dcc7", text: "#b04a1f" },
-  mp4: { bg: "#f6dcc7", text: "#b04a1f" },
-  doc: { bg: "#f5efe7", text: "#8a7f76" },
-  docx: { bg: "#f5efe7", text: "#8a7f76" },
-};
-function extStyle(filename) {
-  const ext = (filename.split(".").pop() || "").toLowerCase();
-  return EXT_STYLE[ext] || { bg: "#f5efe7", text: "#8a7f76" };
-}
-
-const EXECUTABLE_EXTS = new Set(["apk", "exe", "msi", "bat", "cmd", "com", "sh", "jar", "appimage", "ps1"]);
 
 // Matches design screen 10.7's conversation pane exactly: header with
 // presence-ring avatar + Call/Video/Files actions, a merged thread of text
@@ -59,6 +40,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   const hasNativePicker = Boolean(window.electronAPI?.pickFile);
   const [gateFile, setGateFile] = useState(null);
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
+  const { peers: livePeers } = usePeers();
   const bottomRef = useRef(null);
   const peerIdRef = useRef(peer?.peer_id);
   peerIdRef.current = peer?.peer_id;
@@ -164,6 +146,25 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
     if (!window.confirm(`Clear your entire chat history with ${peer.name}? This only clears it on this device, it can't be undone.`)) return;
     setMessages([]);
     api.clearConversation(peer.peer_id).catch(() => {});
+  }
+
+  // Anyone else currently discoverable, excluding this same conversation -
+  // forwarding to a currently-offline peer isn't offered here since there's
+  // no picker feedback for "queued, will send later" yet; unlike a plain
+  // send from the composer, a forward with no visible confirmation that
+  // silently queued would be confusing.
+  const forwardCandidates = livePeers.filter((p) => p.peer_id !== peer.peer_id);
+
+  function handleForwardMessage(msg, targetPeerId) {
+    api.sendMessage(targetPeerId, msg.body).catch(() => {});
+  }
+
+  function handleForwardFile(file, targetPeerId) {
+    // Only ever offered for a received, completed file - that's the only
+    // case with a real local saved_path to re-send from. A file you sent
+    // has no path recorded anywhere the frontend can see (see
+    // filetransfer.py: saved_path is only ever set on the receiving side).
+    api.sendFile(targetPeerId, file.saved_path).catch(() => {});
   }
 
   async function sendFileAtPath(path) {
@@ -291,7 +292,13 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
                 </div>
               )}
               {item.kind === "message" ? (
-                <MessageBubble msg={item.data} onRetry={() => handleRetryMessage(item.data)} onDelete={(everyone) => handleDeleteMessage(item.data, everyone)} />
+                <MessageBubble
+                  msg={item.data}
+                  onRetry={() => handleRetryMessage(item.data)}
+                  onDelete={(everyone) => handleDeleteMessage(item.data, everyone)}
+                  forwardCandidates={forwardCandidates}
+                  onForward={(targetPeerId) => handleForwardMessage(item.data, targetPeerId)}
+                />
               ) : (
                 <FileBubble
                   file={item.data}
@@ -299,6 +306,8 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
                   onAccept={() => handleAcceptClick(item.data)}
                   onDecline={() => handleDeclineClick(item.data)}
                   onRetry={() => handleRetryClick(item.data)}
+                  forwardCandidates={forwardCandidates}
+                  onForward={(targetPeerId) => handleForwardFile(item.data, targetPeerId)}
                 />
               )}
             </div>
@@ -416,7 +425,7 @@ const pillButtonStyle = {
   color: "var(--text-strong)",
 };
 
-function MessageBubble({ msg, onRetry, onDelete }) {
+function MessageBubble({ msg, onRetry, onDelete, forwardCandidates, onForward }) {
   const sent = msg.direction === "sent";
   const failed = msg.status === "failed";
   const [menuOpen, setMenuOpen] = useState(false);
@@ -477,10 +486,17 @@ function MessageBubble({ msg, onRetry, onDelete }) {
     </div>
   );
 
+  const bubbleActions = (
+    <div style={{ display: "flex", gap: 1 }}>
+      {deleteButton}
+      <ForwardMenu candidates={forwardCandidates} onPick={onForward} align={sent ? "right" : "left"} />
+    </div>
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: sent ? "flex-end" : "flex-start", gap: 4, maxWidth: "58%", alignSelf: sent ? "flex-end" : "flex-start" }}>
       <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
-        {!sent && deleteButton}
+        {!sent && bubbleActions}
         <div
           style={{
             padding: "11px 15px",
@@ -495,7 +511,7 @@ function MessageBubble({ msg, onRetry, onDelete }) {
         >
           {msg.body}
         </div>
-        {sent && deleteButton}
+        {sent && bubbleActions}
       </div>
       {sent && !failed && (
         <div style={{ fontSize: 11, color: "var(--text-3)", fontWeight: 500 }}>
@@ -527,7 +543,64 @@ const deleteGlyphStyle = {
   color: "var(--text-3)",
 };
 
-function FileBubble({ file, progress, onAccept, onDecline, onRetry }) {
+// Shared by MessageBubble and FileBubble. Only ever offered for a message
+// (any direction) or a completed, received file - see the two call sites'
+// own comments for why sent files aren't included. Deliberately doesn't
+// list a currently-offline peer: unlike a normal send from the composer,
+// there'd be no visible confirmation that a forward silently queued, which
+// would just look like it went nowhere.
+function ForwardMenu({ candidates, onPick, align = "right" }) {
+  const [open, setOpen] = useState(false);
+  const disabled = candidates.length === 0;
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        onClick={() => !disabled && setOpen((v) => !v)}
+        disabled={disabled}
+        title={disabled ? "No one else on this network to forward to" : "Forward"}
+        style={{ ...deleteGlyphStyle, opacity: disabled ? 0.22 : 0.45, cursor: disabled ? "default" : "pointer" }}
+      >
+        ↪
+      </button>
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: 24,
+            [align]: 0,
+            zIndex: 20,
+            minWidth: 180,
+            maxHeight: 220,
+            overflowY: "auto",
+            borderRadius: 12,
+            background: "var(--surface)",
+            border: "1px solid var(--border-soft)",
+            boxShadow: "var(--shadow)",
+            padding: 6,
+          }}
+        >
+          <div style={{ padding: "4px 10px 6px", font: '600 10px/1 "IBM Plex Mono", monospace', letterSpacing: "0.08em", color: "var(--text-3)" }}>
+            FORWARD TO
+          </div>
+          {candidates.map((p) => (
+            <button
+              key={p.peer_id}
+              onClick={() => {
+                setOpen(false);
+                onPick(p.peer_id);
+              }}
+              style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, background: "transparent", border: "none", fontSize: 12.5, fontWeight: 600, color: "var(--text-strong)" }}
+            >
+              {p.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FileBubble({ file, progress, onAccept, onDecline, onRetry, forwardCandidates, onForward }) {
   const sent = file.direction === "sent";
   const { bg, text } = extStyle(file.filename);
   const isExecutable = EXECUTABLE_EXTS.has((file.filename.split(".").pop() || "").toLowerCase());
@@ -537,6 +610,12 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry }) {
   // resend(): it raises if direction isn't "sent"), so a failed received
   // file has no retry path from this side, only the sender can retry.
   const failed = sent && file.status === "failed";
+  // Forwarding only works from a real local saved_path, which only ever
+  // exists on the receiving side (filetransfer.py never records one for a
+  // sent file). A file you sent can't be forwarded from here.
+  const canForward = !sent && file.status === "completed" && Boolean(file.saved_path);
+  const [imagePreviewFailed, setImagePreviewFailed] = useState(false);
+  const showImagePreview = isImageFile(file.filename) && Boolean(file.saved_path) && !imagePreviewFailed;
 
   if (sent && inProgress) {
     const pct = Math.round((progress || 0) * 100);
@@ -576,22 +655,35 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry }) {
           gap: 10,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-          <span style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 12, background: bg, display: "flex", alignItems: "center", justifyContent: "center", font: '600 9.5px/1 "IBM Plex Mono", monospace', color: text }}>
-            {(file.filename.split(".").pop() || "").slice(0, 3).toUpperCase()}
-          </span>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 7 }}>
-              {file.filename}
-              {isExecutable && (
-                <span style={{ padding: "2px 7px", borderRadius: 99, background: "#f9e3de", font: '600 9.5px/1.3 "Hanken Grotesk", sans-serif', color: "#a83f30", flexShrink: 0 }}>Installable</span>
-              )}
-            </div>
+        {/* WhatsApp-style: a downloaded image shows the actual photo, not
+            a generic file icon. Sent images don't get this - saved_path is
+            never recorded for anything you sent (see FileOpenActions'
+            same limitation just above), only what you've received. */}
+        {showImagePreview ? (
+          <>
+            <ImagePreview filePath={file.saved_path} filename={file.filename} onFail={() => setImagePreviewFailed(true)} />
             <div className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
-              {formatSize(file.size)} · {file.status}
+              {file.filename} · {formatSize(file.size)}
+            </div>
+          </>
+        ) : (
+          <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+            <span style={{ width: 38, height: 38, flexShrink: 0, borderRadius: 12, background: bg, display: "flex", alignItems: "center", justifyContent: "center", font: '600 9.5px/1 "IBM Plex Mono", monospace', color: text }}>
+              {(file.filename.split(".").pop() || "").slice(0, 3).toUpperCase()}
+            </span>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 14, display: "flex", alignItems: "center", gap: 7 }}>
+                {file.filename}
+                {isExecutable && (
+                  <span style={{ padding: "2px 7px", borderRadius: 99, background: "#f9e3de", font: '600 9.5px/1.3 "Hanken Grotesk", sans-serif', color: "#a83f30", flexShrink: 0 }}>Installable</span>
+                )}
+              </div>
+              <div className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                {formatSize(file.size)} · {file.status}
+              </div>
             </div>
           </div>
-        </div>
+        )}
         {pending && (
           <div style={{ display: "flex", gap: 8 }}>
             <button onClick={onDecline} style={{ flex: 1, padding: "8px 0", borderRadius: 10, background: "transparent", border: "1px solid var(--border)", color: "var(--text-muted)", fontSize: 12.5, fontWeight: 600 }}>
@@ -607,7 +699,17 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry }) {
             Retry send
           </button>
         )}
-        {file.saved_path && <FileOpenActions file={file} />}
+        {file.saved_path && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <FileOpenActions file={file} />
+            {canForward && (
+              <>
+                <div style={{ flex: 1 }} />
+                <ForwardMenu candidates={forwardCandidates} onPick={onForward} align="right" />
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -50,6 +50,7 @@ class IncomingFileOffer:
     filename: str
     size: int
     is_executable: bool
+    group_id: Optional[str] = None
 
 
 def is_executable_file(filename: str) -> bool:
@@ -102,12 +103,20 @@ class FileTransferService:
         # Only lives for this process's lifetime - see Known limitations.
         self._outgoing_paths: dict[str, str] = {}
         self._listeners: dict[str, asyncio.AbstractServer] = {}
+        self._flush_task: Optional[asyncio.Task] = None
 
         messaging.add_control_handler(self._on_control)
 
+    async def start(self) -> None:
+        self._flush_task = asyncio.create_task(self._flush_pending_loop())
+
+    async def stop(self) -> None:
+        if self._flush_task:
+            self._flush_task.cancel()
+
     # -- sending -------------------------------------------------------
 
-    async def send_file(self, peer_id: str, file_path: str) -> str:
+    async def send_file(self, peer_id: str, file_path: str, group_id: Optional[str] = None) -> str:
         path = Path(file_path)
         if not path.is_file():
             raise FileNotFoundError(file_path)
@@ -126,9 +135,10 @@ class FileTransferService:
             sha256=digest,
             is_executable=executable,
             status="offered",
+            group_id=group_id,
         )
         self._outgoing_paths[transfer_id] = str(path)
-        return await self._offer_and_stream(transfer_id, peer_id, str(path), path.name, size, digest, executable)
+        return await self._offer_and_stream(transfer_id, peer_id, str(path), path.name, size, digest, executable, group_id)
 
     async def resend(self, transfer_id: str) -> str:
         """Retry a transfer that stalled (peer dropped mid-stream). Reuses
@@ -140,17 +150,42 @@ class FileTransferService:
         path = self._outgoing_paths.get(transfer_id)
         if not path:
             raise ValueError("original file path isn't available to resend (process may have restarted)")
-        return await self._offer_and_stream(transfer_id, record.peer_id, path, record.filename, record.size, record.sha256, record.is_executable)
+        return await self._offer_and_stream(transfer_id, record.peer_id, path, record.filename, record.size, record.sha256, record.is_executable, record.group_id)
 
-    async def _offer_and_stream(self, transfer_id: str, peer_id: str, path: str, filename: str, size: int, digest: str, executable: bool) -> str:
+    async def _flush_pending_loop(self) -> None:
+        """Mirrors messaging.py's own _flush_pending_loop: whenever a peer
+        we have a failed outgoing transfer for becomes visible again,
+        retry it automatically via resend(), the same mechanism the manual
+        "Retry send" button already uses. Deliberately scoped to status
+        'failed' only (set when the initial offer couldn't reach the peer
+        at all), not the 'offered' status a mid-stream drop is reset to -
+        that status is ambiguous with a transfer still legitimately
+        awaiting its first accept/decline response, and resend()-ing one of
+        those would stomp on a real in-flight offer_future. Same existing
+        limitation as the manual button: only works while this same
+        backend process is still the one that originally sent it, since
+        _outgoing_paths doesn't survive a restart."""
+        while True:
+            await asyncio.sleep(2)
+            visible_ids = {p.peer_id for p in self.discovery.registry.list()}
+            for transfer_id in list(self._outgoing_paths.keys()):
+                record = await self.store.get_file(transfer_id)
+                if record is None or record.status != "failed" or record.peer_id not in visible_ids:
+                    continue
+                try:
+                    await self.resend(transfer_id)
+                except (ConnectionError, ValueError):
+                    pass  # still not reachable, or path already gone - next tick tries again
+
+    async def _offer_and_stream(self, transfer_id: str, peer_id: str, path: str, filename: str, size: int, digest: str, executable: bool, group_id: Optional[str] = None) -> str:
         loop = asyncio.get_event_loop()
         offer_future: asyncio.Future = loop.create_future()
         self._offer_waiters[transfer_id] = offer_future
 
-        sent = await self.messaging.send_control(
-            peer_id,
-            {"type": "file_offer", "transfer_id": transfer_id, "filename": filename, "size": size, "sha256": digest, "is_executable": executable},
-        )
+        offer = {"type": "file_offer", "transfer_id": transfer_id, "filename": filename, "size": size, "sha256": digest, "is_executable": executable}
+        if group_id:
+            offer["group_id"] = group_id
+        sent = await self.messaging.send_control(peer_id, offer)
         if not sent:
             self._offer_waiters.pop(transfer_id, None)
             await self.store.update_file_status(transfer_id, "failed")
@@ -226,6 +261,7 @@ class FileTransferService:
 
     async def _handle_offer(self, peer_id: str, msg: dict) -> None:
         transfer_id = msg["transfer_id"]
+        group_id = msg.get("group_id")
         await self.store.save_file(
             transfer_id=transfer_id,
             peer_id=peer_id,
@@ -235,9 +271,10 @@ class FileTransferService:
             sha256=msg["sha256"],
             is_executable=msg.get("is_executable", False),
             status="awaiting_accept",
+            group_id=group_id,
         )
         if self.on_offer:
-            self.on_offer(IncomingFileOffer(transfer_id, peer_id, msg["filename"], msg["size"], msg.get("is_executable", False)))
+            self.on_offer(IncomingFileOffer(transfer_id, peer_id, msg["filename"], msg["size"], msg.get("is_executable", False), group_id))
 
     async def decline(self, transfer_id: str) -> None:
         record = await self.store.get_file(transfer_id)

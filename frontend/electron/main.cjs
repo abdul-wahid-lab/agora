@@ -275,6 +275,33 @@ ipcMain.handle("file:saveAs", async (_e, { sourcePath, suggestedName }) => {
   return result.filePath;
 });
 
+// Image thumbnails/previews in chat: reads a downloaded image and returns
+// it as a data: URI. Deliberately not a raw file:// src or a custom
+// registered protocol - Chromium's default webSecurity (left on, not
+// disabled anywhere in this app) blocks a plain http(s)/file-origin
+// renderer from loading file:// resources directly, and a custom protocol
+// would need its own careful path-traversal handling for what's really
+// just "show me this one already-known-safe path." A data: URI sidesteps
+// both problems and needs nothing registered up front. Capped at 15MB so a
+// giant image doesn't get read/base64'd/held in memory just to render a
+// thumbnail; the real file is still fully accessible via the existing
+// "Open"/"Save a copy..." actions regardless of this cap.
+const IMAGE_MIME_BY_EXT = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp" };
+const MAX_PREVIEW_BYTES = 15 * 1024 * 1024;
+ipcMain.handle("file:readImageDataUrl", async (_e, filePath) => {
+  const ext = path.extname(filePath).toLowerCase();
+  const mime = IMAGE_MIME_BY_EXT[ext];
+  if (!mime) return null;
+  try {
+    const stat = await fs.promises.stat(filePath);
+    if (stat.size > MAX_PREVIEW_BYTES) return null;
+    const buf = await fs.promises.readFile(filePath);
+    return `data:${mime};base64,${buf.toString("base64")}`;
+  } catch {
+    return null;
+  }
+});
+
 const gotLock = app.requestSingleInstanceLock();
 logToFile(`requestSingleInstanceLock() -> ${gotLock}`);
 if (!gotLock) {

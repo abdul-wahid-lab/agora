@@ -35,6 +35,7 @@ from app.calling import CallService, CallState
 from app.deletion import DeleteService
 from app.discovery import PeerDiscovery
 from app.filetransfer import FileTransferService, IncomingFileOffer
+from app.groups import GroupService
 from app.messaging import IncomingMessage, MessagingService
 from app.storage import MessageStore
 
@@ -97,6 +98,7 @@ def _on_offer(offer: IncomingFileOffer) -> None:
                 "filename": offer.filename,
                 "size": offer.size,
                 "is_executable": offer.is_executable,
+                "group_id": offer.group_id,
             }
         )
     )
@@ -112,7 +114,16 @@ def _on_progress(transfer_id: str, bytes_sent: int, total: int) -> None:
 
 def _on_incoming_call(state: CallState, sdp: dict) -> None:
     asyncio.create_task(
-        _broadcast({"type": "call_incoming", "call_id": state.call_id, "peer_id": state.peer_id, "media": state.media, "sdp": sdp})
+        _broadcast(
+            {
+                "type": "call_incoming",
+                "call_id": state.call_id,
+                "peer_id": state.peer_id,
+                "media": state.media,
+                "sdp": sdp,
+                "group_call_id": state.group_call_id,
+            }
+        )
     )
 
 
@@ -142,6 +153,37 @@ def _on_remote_delete(peer_id: str, msg_id: str) -> None:
     asyncio.create_task(_broadcast({"type": "message_deleted", "peer_id": peer_id, "msg_id": msg_id}))
 
 
+def _on_group_invite(group) -> None:
+    asyncio.create_task(
+        _broadcast({"type": "group_invite", "group_id": group.group_id, "name": group.name, "members": [{"peer_id": m.peer_id, "name": m.name} for m in group.members]})
+    )
+
+
+def _on_group_message(evt) -> None:
+    asyncio.create_task(
+        _broadcast({"type": "group_message", "group_id": evt.group_id, "msg_id": evt.msg_id, "sender_peer_id": evt.sender_peer_id, "sender_name": evt.sender_name, "body": evt.body, "ts": evt.ts})
+    )
+
+
+def _on_group_call_start(evt) -> None:
+    # Broadcast locally too when *we* started it (group_service.start_group_call
+    # doesn't send a wire message to ourselves) - every member, initiator
+    # included, reacts to this exact same event to independently compute its
+    # own slice of the mesh. Symmetric, no special-cased initiator path.
+    asyncio.create_task(
+        _broadcast(
+            {
+                "type": "group_call_start",
+                "group_id": evt.group_id,
+                "group_call_id": evt.group_call_id,
+                "media": evt.media,
+                "group_name": evt.group_name,
+                "members": [{"peer_id": m.peer_id, "name": m.name} for m in evt.members],
+            }
+        )
+    )
+
+
 messaging = MessagingService(discovery, store, on_message=_on_message)
 file_transfer = FileTransferService(
     discovery,
@@ -167,6 +209,16 @@ calling = CallService(
     on_collision_yield=_on_collision_yield,
 )
 deletion = DeleteService(discovery, messaging, store, on_remote_delete=_on_remote_delete)
+group_service = GroupService(
+    messaging,
+    store,
+    file_transfer,
+    self_peer_id=discovery.peer_id,
+    self_name=discovery.device_name,
+    on_group_invite=_on_group_invite,
+    on_group_message=_on_group_message,
+    on_group_call_start=_on_group_call_start,
+)
 
 _peer_watch_task: Optional[asyncio.Task] = None
 
@@ -199,6 +251,7 @@ async def startup() -> None:
     await asyncio.to_thread(discovery.start)
     await messaging.start()
     await deletion.start()
+    await file_transfer.start()
     _peer_watch_task = asyncio.create_task(_watch_peers())
 
 
@@ -206,6 +259,7 @@ async def startup() -> None:
 async def shutdown() -> None:
     if _peer_watch_task:
         _peer_watch_task.cancel()
+    await file_transfer.stop()
     await deletion.stop()
     await messaging.stop()
     discovery.stop()
@@ -233,6 +287,91 @@ class SendMessageBody(BaseModel):
 async def send_message(body: SendMessageBody):
     msg_id = await messaging.send(body.peer_id, body.body)
     return {"msg_id": msg_id}
+
+
+class CreateGroupBody(BaseModel):
+    name: str
+    members: list[dict]  # [{"peer_id": ..., "name": ...}, ...] - everyone except self
+
+
+@app.post("/groups")
+async def create_group(body: CreateGroupBody):
+    group = await group_service.create_group(body.name, [(m["peer_id"], m["name"]) for m in body.members])
+    return {"group_id": group.group_id, "name": group.name, "members": [{"peer_id": m.peer_id, "name": m.name} for m in group.members]}
+
+
+@app.get("/groups")
+async def list_groups():
+    groups = await store.list_groups()
+    return [{"group_id": g.group_id, "name": g.name, "created_at": g.created_at, "members": [{"peer_id": m.peer_id, "name": m.name} for m in g.members]} for g in groups]
+
+
+class SendGroupMessageBody(BaseModel):
+    body: str
+
+
+@app.post("/groups/{group_id}/messages")
+async def send_group_message(group_id: str, body: SendGroupMessageBody):
+    msg_id = await group_service.send_group_message(group_id, body.body)
+    return {"msg_id": msg_id}
+
+
+@app.get("/groups/{group_id}/messages")
+async def get_group_history(group_id: str, limit: int = 100):
+    history = await store.group_history(group_id, limit=limit)
+    return [{"msg_id": m.msg_id, "sender_peer_id": m.sender_peer_id, "sender_name": m.sender_name, "body": m.body, "ts": m.ts} for m in history]
+
+
+class SendGroupFileBody(BaseModel):
+    path: str
+
+
+@app.post("/groups/{group_id}/files")
+async def send_group_file(group_id: str, body: SendGroupFileBody):
+    # Same fire-and-forget shape as POST /files/send: send_group_file()
+    # blocks until every member's transfer finishes or fails, far too long
+    # for one request. Each member's offer row appears in GET
+    # /groups/{id}/files almost immediately, and /events pushes every
+    # status change as it happens, same as any other file transfer.
+    asyncio.create_task(group_service.send_group_file(group_id, body.path))
+    return {"status": "sending"}
+
+
+@app.get("/groups/{group_id}/files")
+async def get_group_files(group_id: str, limit: int = 200):
+    files = await store.group_files(group_id, limit=limit)
+    return [
+        {
+            "transfer_id": f.transfer_id,
+            "peer_id": f.peer_id,
+            "direction": f.direction,
+            "filename": f.filename,
+            "size": f.size,
+            "sha256": f.sha256,
+            "is_executable": f.is_executable,
+            "status": f.status,
+            "saved_path": f.saved_path,
+            "ts": f.ts,
+        }
+        for f in files
+    ]
+
+
+class StartGroupCallBody(BaseModel):
+    media: str = "audio"
+
+
+@app.post("/groups/{group_id}/call")
+async def start_group_call(group_id: str, body: StartGroupCallBody):
+    try:
+        evt = await group_service.start_group_call(group_id, body.media)
+    except ValueError as e:
+        return {"status": "failed", "reason": str(e)}
+    # Broadcast to ourselves too - group_service only sent the wire message
+    # to the *other* members, every member (initiator included) reacts to
+    # this same event to independently compute its own slice of the mesh.
+    _on_group_call_start(evt)
+    return {"group_call_id": evt.group_call_id, "members": [{"peer_id": m.peer_id, "name": m.name} for m in evt.members]}
 
 
 @app.get("/messages/{peer_id}")
@@ -355,12 +494,13 @@ class CallOfferBody(BaseModel):
     peer_id: str
     sdp: dict
     media: str = "audio"
+    group_call_id: Optional[str] = None
 
 
 @app.post("/calls/offer")
 async def call_offer(body: CallOfferBody):
     try:
-        call_id = await calling.start_call(body.peer_id, body.sdp, body.media)
+        call_id = await calling.start_call(body.peer_id, body.sdp, body.media, group_call_id=body.group_call_id)
     except (ValueError, ConnectionError) as e:
         return {"status": "failed", "reason": str(e)}
     return {"call_id": call_id, "status": "ringing"}

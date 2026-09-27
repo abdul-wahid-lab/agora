@@ -52,6 +52,12 @@ class CallState:
     started_at: float = field(default_factory=time.time)
     connected_at: Optional[float] = None  # set the moment both sides reach in_call
     end_reason: Optional[str] = None
+    # Set only when this call is one leg of a group call's mesh (see
+    # groups.py) - calling.py itself stays completely unaware groups exist
+    # beyond carrying this one opaque tag through so the frontend can group
+    # several simultaneous 1:1 calls into one screen. None for an ordinary
+    # 1:1 call.
+    group_call_id: Optional[str] = None
 
 
 def _final_status(state: CallState, reason: str) -> str:
@@ -113,17 +119,20 @@ class CallService:
 
     # -- originating a call --------------------------------------------------
 
-    async def start_call(self, peer_id: str, sdp: dict, media: str) -> str:
+    async def start_call(self, peer_id: str, sdp: dict, media: str, group_call_id: Optional[str] = None) -> str:
         if peer_id in self._active_for_peer:
             raise ValueError(f"already have an active call with {peer_id}")
 
         call_id = str(uuid.uuid4())
-        state = CallState(call_id=call_id, peer_id=peer_id, direction="outgoing", media=media, status="ringing")
+        state = CallState(call_id=call_id, peer_id=peer_id, direction="outgoing", media=media, status="ringing", group_call_id=group_call_id)
         self._calls[call_id] = state
         self._active_for_peer[peer_id] = call_id
         await self.store.save_call_start(call_id, peer_id, "outgoing", media, started_at=state.started_at)
 
-        sent = await self.messaging.send_control(peer_id, {"type": "call_offer", "call_id": call_id, "sdp": sdp, "media": media})
+        offer = {"type": "call_offer", "call_id": call_id, "sdp": sdp, "media": media}
+        if group_call_id:
+            offer["group_call_id"] = group_call_id
+        sent = await self.messaging.send_control(peer_id, offer)
         if not sent:
             await self._finalize(state, "failed")
             raise ConnectionError(f"peer {peer_id} not reachable")
@@ -200,7 +209,7 @@ class CallService:
                 await self.messaging.send_control(peer_id, {"type": "call_end", "call_id": call_id, "reason": "busy"})
                 return
 
-        state = CallState(call_id=call_id, peer_id=peer_id, direction="incoming", media=msg.get("media", "audio"), status="ringing")
+        state = CallState(call_id=call_id, peer_id=peer_id, direction="incoming", media=msg.get("media", "audio"), status="ringing", group_call_id=msg.get("group_call_id"))
         self._calls[call_id] = state
         self._active_for_peer[peer_id] = call_id
         await self.store.save_call_start(call_id, peer_id, "incoming", state.media, started_at=state.started_at)
