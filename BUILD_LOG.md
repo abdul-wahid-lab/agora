@@ -328,6 +328,47 @@ Full detail is under **Phase 3, Calling** above (backend signaling relay, the me
 
 **Known limitation, not yet done:** no live browser-UI click-through test of the new delete-menu/forward-menu buttons inside `GroupConversationPane.jsx` specifically (the earlier group-calling work got a full headless-Chrome click-through; this step's UI was instead verified by a clean production build plus the real two-process API-level test above, since the change is CRUD-shaped reuse of already-UI-tested components, not new interaction logic). Flagged here rather than silently assumed working.
 
+### Step 17: Nearby search, call-history pagination, adaptive bandwidth throttle · ✅ DONE (build/automated-test/live-API verified)
+
+**What changed:** three items from the "smaller known gaps" list, all now fixed.
+
+- **Nearby search box now actually filters.** [PeerList.jsx](frontend/src/components/PeerList.jsx)'s search field was a plain `<span>` with static text, no input, no state. Now a real controlled `<input>` filtering the visible peer list by name live, with the `ON THIS NETWORK · N` count and empty state both reflecting the filtered result. Files' own search (`FilesScreen.jsx`) already worked, this was the only real gap. Placeholder corrected from "Search people and files…" to "Search people…", the old wording overclaimed a cross-screen search this component never had the data to perform.
+- **Call history can now load past the first page.** `CallsScreen.jsx` tracks a growing `limit` (starts at 50), shows a "Load more" button whenever the last fetch came back full, and grows the limit on click - no backend change needed, `GET /calls/history?limit=` already accepted an arbitrary limit, the frontend just never varied it. Re-fetches the full `[0, limit)` window on every poll tick rather than tracking a separate offset, so the existing live 4s refresh and manual "Load more" share one code path.
+- **Bandwidth-sharing throttle is now adaptive, not just a flat pause.** [filetransfer.py](backend/app/filetransfer.py)'s `_stream_to_peer` measures each chunk's real `writer.drain()` latency and feeds it into a new `throttle_sleep_seconds()`: the same 0.2s floor as before, plus up to 1.0s more scaled by that measured latency. `drain()` only returns once the OS is ready to accept more data, so an elevated drain time is a genuine signal of contention on this device's own send path, not fabricated, though it's still a proxy (this backend never sees the call's actual RTP stream, WebRTC media never touches this process).
+
+**Tests performed:**
+- ✅ New deterministic unit test on `throttle_sleep_seconds()` (no real sockets): zero measured latency gives exactly the baseline, higher latency scales the backoff up, an extreme value hits the cap rather than growing unbounded.
+- ✅ Pre-existing `_test_bandwidth_sharing.py` re-run green, confirming the adaptive top-up doesn't disturb the existing flat-throttle guarantee on loopback (no real contention there, so it correctly stays near the same baseline behavior as before).
+- ✅ Live API test: seeded 75 real call records into a real running backend's database, confirmed `GET /calls/history?limit=50` returns exactly 50 and `?limit=100` returns all 75, proving "Load more" (which just grows this same limit) returns genuinely more rows through the real API, not a UI-only illusion.
+- ✅ Full backend suite (8 test files) and frontend production build both re-verified clean.
+
+**Known gap:** no live browser-UI click-through test of the Nearby search input or the "Load more" button specifically (both are plain, synchronous, non-wire-protocol UI changes, verified by a clean build plus, for call history, the live API-level check above).
+
+### Step 18: A real self-avatar photo picker · ✅ DONE (build/real-Node-logic-test/live-console-check verified)
+
+**What changed:** onboarding's "Choose photo…" button was previously a disabled "coming soon" placeholder. Now real, deliberately scoped to self-view-only, the same way the existing avatar-color choice already works: nothing here ever travels to other peers, they still only ever see your name plus a color they derive themselves from your peer_id. A synced-photo system (sending the image to peers) was discussed and explicitly deferred as a separate, bigger decision.
+
+- **Picker**: a new `photo` filter category in [main.cjs](frontend/electron/main.cjs)'s `FILE_PICKER_FILTERS`, reusing the exact same native dialog chat attachments already use, narrower than the existing `media` category (images only, no video).
+- **Storage**: a real file copied into Electron's `userData` directory, tracked in the same `identity.json` that already persists peer_id/name - not a data: URI in `localStorage`, which a real photo could easily overflow. Three new IPC handlers reuse the same capped-at-15MB read-and-encode helper the chat image-preview feature already built (`readImageAsDataUrl`, pulled out as a shared function), and switching photos cleans up the old file.
+- **UI**: a new [useSelfAvatarPhoto.js](frontend/src/hooks/useSelfAvatarPhoto.js) hook shared by `Onboarding.jsx`, `IconRail.jsx`, and `SettingsScreen.jsx`. Settings also gained Choose/Change/Remove controls on the profile card, since onboarding only runs once and a photo needs to be changeable afterward too. Correctly disabled with an honest reason when `window.electronAPI` isn't present.
+
+**Tests performed:**
+- ✅ Real-Node test (no mocks) against real files replicating the exact copy/encode logic: valid image round-trips to the identical data: URI, switching photo extensions deletes the stale old file, an oversized file is rejected before being copied, a non-image extension is rejected, clearing removes the file from disk.
+- ✅ Live headless-Chrome check (browser dev mode, no Electron): Onboarding, the main app shell, and Settings all render with zero console errors or exceptions with `window.electronAPI` absent, and the picker button correctly shows disabled with the right tooltip rather than silently doing nothing.
+- ✅ Full backend suite and frontend production build both re-verified clean.
+
+**Known gap**: the actual native file-picker dialog itself can't be scripted (it's a real OS dialog, not a web element), so the exact moment of picking a file through it hasn't been exercised end-to-end - only the logic on both sides of that step, which is where the real risk was.
+
+### Step 19: Delete/forward icons replaced by a right-click context menu · ✅ DONE (live-verified, real bug found and fixed)
+
+**What changed:** a user screenshot showed the delete/forward icons on a message rendering as a barely-visible dot instead of a clear icon. Root cause: they were plain emoji characters (🗑, ↪), and emoji rendering depends on the OS having a working color-emoji font Chromium can fall back to - not guaranteed on every Windows install, and on that real machine it silently degraded with no error anywhere to signal it.
+
+Fixed two ways together, per direct user request to also change the interaction model:
+- Replaced the emoji with plain inline SVGs (`TrashIcon`/`ForwardIcon`), which render identically regardless of installed system fonts - same approach `IconRail.jsx`'s nav icons already used.
+- Rebuilt the interaction entirely: instead of two small persistent hover icons next to every bubble, right-clicking a message (or an eligible file) now opens one combined menu with delete and forward together, via a new [BubbleContextMenu.jsx](frontend/src/components/BubbleContextMenu.jsx) + `useContextMenu()` hook shared by `ConversationPane.jsx` and `GroupConversationPane.jsx`. Positioned at the real click coordinates, clamped to stay on-screen, closes on outside-click or Escape. The old `ForwardMenu.jsx` component became fully dead code as a result and was deleted outright.
+
+**Tests performed:** two full live end-to-end runs (three real backend processes each, headless Chrome driving the real UI via the DevTools Protocol with real `Input.dispatchMouseEvent` right-clicks, not synthetic JS events) - one for 1:1 chat, one for group chat. Confirmed: a sent message's menu shows both delete options plus forward targets (correctly excluding the peer/group already open); a received message's menu correctly omits "Delete for everyone"; outside-click closes the menu; clicking a forward target delivers the message to that peer's real backend; clicking "Delete for everyone" on a group message actually removed it from another real member's database. Two test-script bugs were found and fixed along the way (a CORS-blocked origin, a selector matching the sidebar's own preview text before the real bubble) - real traps, not app bugs, noted in TASK_QUEUE.md for next time. Full backend suite and frontend build re-verified clean (backend wasn't touched).
+
 ## Test it yourself
 
 There's no UI wired up yet: Phases 1, 2, and 2B are CLI-only for now (`app.cli_chat`), by design, per the spec's own "prove the transport before touching UI" instruction.

@@ -1,4 +1,5 @@
 import { paletteAt, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
+import { useSelfAvatarPhoto } from "../hooks/useSelfAvatarPhoto";
 
 // Exact icon shapes from the design (10.7 etc.) - each nav item is drawn
 // with plain divs, not an icon font/SVG library, matching the source.
@@ -52,6 +53,7 @@ export default function IconRail({ active, onSelect, selfInitial }) {
   // since they were never given a choice to save.
   const storedAvatarIndex = localStorage.getItem(SELF_AVATAR_INDEX_KEY);
   const selfAvatar = storedAvatarIndex !== null ? paletteAt(Number(storedAvatarIndex)) : { bg: "var(--avatar-self)", text: "var(--accent-strong)" };
+  const { photo: selfPhoto } = useSelfAvatarPhoto();
   return (
     <aside
       style={{
@@ -99,7 +101,8 @@ export default function IconRail({ active, onSelect, selfInitial }) {
           width: 40,
           height: 40,
           borderRadius: 99,
-          background: selfAvatar.bg,
+          overflow: "hidden",
+          background: selfPhoto ? "var(--surface-2)" : selfAvatar.bg,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -110,7 +113,7 @@ export default function IconRail({ active, onSelect, selfInitial }) {
           padding: 0,
         }}
       >
-        {selfInitial || "?"}
+        {selfPhoto ? <img src={selfPhoto} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : selfInitial || "?"}
       </button>
     </aside>
   );

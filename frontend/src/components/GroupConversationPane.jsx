@@ -5,7 +5,7 @@ import { isImageFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } 
 import SecurityGate from "./SecurityGate";
 import FileOpenActions from "./FileOpenActions";
 import ImagePreview from "./ImagePreview";
-import ForwardMenu, { glyphStyle } from "./ForwardMenu";
+import BubbleContextMenu, { useContextMenu } from "./BubbleContextMenu";
 
 // Must match backend/app/groups.py's MAX_GROUP_CALL_MEMBERS - kept here as
 // a separate constant (not shared config between the two codebases) purely
@@ -352,53 +352,23 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
 
 // Group chat has no left/right "sent vs received" layout the way 1:1 chat
 // does (a group message is never "yours" spatially, only ever attributed by
-// the sender-name label) - delete/forward stay a small icon row next to the
-// bubble rather than mirroring ConversationPane's alignment-flip.
+// the sender-name label) - right-click anywhere on the bubble opens the
+// same delete/forward context menu ConversationPane's 1:1 bubbles use.
 function GroupMessageBubble({ msg, isMine, onDelete, forwardCandidates, onForward }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const { menuPosition, openContextMenu, closeContextMenu } = useContextMenu();
   return (
     <div style={{ display: "flex", alignItems: "flex-end", gap: 4 }}>
       <div style={{ display: "flex", flexDirection: "column", gap: 4, maxWidth: "58%" }}>
         <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-3)", paddingLeft: 2 }}>{msg.sender_name}</div>
-        <div style={{ padding: "11px 15px", borderRadius: "18px 18px 18px 5px", background: "var(--surface)", border: "1px solid var(--border-soft)", fontSize: 14.5, lineHeight: 1.45, wordBreak: "break-word" }}>
+        <div
+          onContextMenu={openContextMenu}
+          title="Right-click for delete/forward"
+          style={{ padding: "11px 15px", borderRadius: "18px 18px 18px 5px", background: "var(--surface)", border: "1px solid var(--border-soft)", fontSize: 14.5, lineHeight: 1.45, wordBreak: "break-word" }}
+        >
           {msg.body}
         </div>
       </div>
-      <div style={{ display: "flex", gap: 1, paddingBottom: 2 }}>
-        <div style={{ position: "relative" }}>
-          <button onClick={() => setMenuOpen((v) => !v)} title="Delete" style={glyphStyle}>
-            🗑
-          </button>
-          {menuOpen && (
-            <div style={{ position: "absolute", top: 24, left: 0, zIndex: 20, minWidth: 168, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border-soft)", boxShadow: "var(--shadow)", padding: 6 }}>
-              <button
-                onClick={() => {
-                  setMenuOpen(false);
-                  onDelete(false);
-                }}
-                style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, background: "transparent", border: "none", fontSize: 12.5, fontWeight: 600, color: "var(--text-strong)" }}
-              >
-                Delete for me
-              </button>
-              {/* Only ever offered on your own message - deleting someone
-                  else's for everyone would mean telling them to remove
-                  something from their own device, not a real feature. */}
-              {isMine && (
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    onDelete(true);
-                  }}
-                  style={{ width: "100%", textAlign: "left", padding: "8px 10px", borderRadius: 8, background: "transparent", border: "none", fontSize: 12.5, fontWeight: 600, color: "var(--danger)" }}
-                >
-                  Delete for everyone
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-        <ForwardMenu candidates={forwardCandidates} onPick={onForward} align="left" />
-      </div>
+      <BubbleContextMenu position={menuPosition} onClose={closeContextMenu} candidates={forwardCandidates} onForward={onForward} onDelete={onDelete} canDeleteForEveryone={isMine} />
     </div>
   );
 }
@@ -433,11 +403,14 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, forwa
   // Same restriction as ConversationPane's own canForward: only a received,
   // completed file has a real local saved_path to re-send from.
   const canForward = !sent && file.status === "completed" && Boolean(file.saved_path);
+  const { menuPosition, openContextMenu, closeContextMenu } = useContextMenu();
 
   return (
     <div style={{ maxWidth: "58%", alignSelf: sent ? "flex-end" : "flex-start", display: "flex", flexDirection: "column", gap: 4 }}>
       <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-3)", paddingLeft: 2, textAlign: sent ? "right" : "left" }}>{senderName}</div>
       <div
+        onContextMenu={canForward ? openContextMenu : undefined}
+        title={canForward ? "Right-click to forward" : undefined}
         style={{
           padding: "11px 13px",
           borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
@@ -491,15 +464,10 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, forwa
         {!sent && file.saved_path && (
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <FileOpenActions file={file} />
-            {canForward && (
-              <>
-                <div style={{ flex: 1 }} />
-                <ForwardMenu candidates={forwardCandidates} onPick={onForward} align="right" />
-              </>
-            )}
           </div>
         )}
       </div>
+      {canForward && <BubbleContextMenu position={menuPosition} onClose={closeContextMenu} candidates={forwardCandidates} onForward={onForward} />}
     </div>
   );
 }

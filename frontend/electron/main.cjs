@@ -227,6 +227,12 @@ ipcMain.on("call:incoming", () => {
 const FILE_PICKER_FILTERS = {
   media: [{ name: "Photos & Videos", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp", "heic", "mp4", "mov", "mkv", "avi"] }],
   document: [{ name: "Documents", extensions: ["pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf", "odt"] }],
+  // Deliberately narrower than "media": no video extensions, and restricted
+  // to exactly what IMAGE_MIME_BY_EXT below can actually encode as a data
+  // URI for display - a self-avatar photo, unlike a chat attachment, is
+  // never just handed to the OS to open, it always needs to be re-rendered
+  // as an <img> src.
+  photo: [{ name: "Photos", extensions: ["png", "jpg", "jpeg", "gif", "webp", "bmp"] }],
   any: [{ name: "All Files", extensions: ["*"] }],
 };
 // Onboarding calls this once a name is chosen. There's no live-rename path
@@ -288,7 +294,8 @@ ipcMain.handle("file:saveAs", async (_e, { sourcePath, suggestedName }) => {
 // "Open"/"Save a copy..." actions regardless of this cap.
 const IMAGE_MIME_BY_EXT = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp" };
 const MAX_PREVIEW_BYTES = 15 * 1024 * 1024;
-ipcMain.handle("file:readImageDataUrl", async (_e, filePath) => {
+
+async function readImageAsDataUrl(filePath) {
   const ext = path.extname(filePath).toLowerCase();
   const mime = IMAGE_MIME_BY_EXT[ext];
   if (!mime) return null;
@@ -300,6 +307,71 @@ ipcMain.handle("file:readImageDataUrl", async (_e, filePath) => {
   } catch {
     return null;
   }
+}
+
+ipcMain.handle("file:readImageDataUrl", (_e, filePath) => readImageAsDataUrl(filePath));
+
+// Self-avatar photo: a real user choice (per TASK_QUEUE.md, previously just
+// a disabled "coming soon" button), stored as an actual copied file in
+// userData rather than a data: URI in localStorage - a real photo can
+// easily exceed localStorage's ~5-10MB origin quota, a file on disk has no
+// such ceiling. identity.json (already used for peer_id/name) also tracks
+// which filename is current, since the extension varies by what was picked.
+// Deliberately local-only, same as the existing avatar-color choice: this
+// never travels to other peers, who still only ever see your name + a
+// color they derive themselves from your peer_id.
+ipcMain.handle("profile:getAvatarPhoto", async () => {
+  const identity = loadOrCreateIdentity();
+  if (!identity.avatarFile) return null;
+  return readImageAsDataUrl(path.join(app.getPath("userData"), identity.avatarFile));
+});
+
+ipcMain.handle("profile:setAvatarPhoto", async (_e, sourcePath) => {
+  const ext = path.extname(sourcePath).toLowerCase();
+  if (!IMAGE_MIME_BY_EXT[ext]) return null;
+  try {
+    const stat = await fs.promises.stat(sourcePath);
+    if (stat.size > MAX_PREVIEW_BYTES) return null;
+  } catch {
+    return null;
+  }
+
+  const identity = loadOrCreateIdentity();
+  // Clean up a previous photo with a different extension (png -> jpg, say)
+  // so switching photos doesn't leave stale files behind forever.
+  if (identity.avatarFile) {
+    try {
+      fs.unlinkSync(path.join(app.getPath("userData"), identity.avatarFile));
+    } catch {
+      // fine if it's already gone
+    }
+  }
+
+  const destName = `avatar${ext}`;
+  const destPath = path.join(app.getPath("userData"), destName);
+  try {
+    await fs.promises.copyFile(sourcePath, destPath);
+  } catch (e) {
+    logToFile(`failed to copy avatar photo: ${e.stack || e}`);
+    return null;
+  }
+  identity.avatarFile = destName;
+  saveIdentity(identity);
+  return readImageAsDataUrl(destPath);
+});
+
+ipcMain.handle("profile:clearAvatarPhoto", async () => {
+  const identity = loadOrCreateIdentity();
+  if (identity.avatarFile) {
+    try {
+      fs.unlinkSync(path.join(app.getPath("userData"), identity.avatarFile));
+    } catch {
+      // fine if it's already gone
+    }
+    delete identity.avatarFile;
+    saveIdentity(identity);
+  }
+  return true;
 });
 
 const gotLock = app.requestSingleInstanceLock();

@@ -95,12 +95,56 @@ stale entries pile up.
   or removal until there's something real behind it. Candidate home for the
   now-documented "clear whole conversation" feature above.
 
-- [ ] **"Choose photo…" in onboarding still has no real feature behind it.**
-  ("Shuffle avatar" next to it is now fixed, see "Fixed since this file was
-  created" above.) File: `frontend/src/components/Onboarding.jsx`. Needs a
-  real file picker + storing/serving a custom avatar image, a bigger feature
-  than the palette-cycling fix. For now it's honestly `disabled` with a
-  "coming soon" label instead of silently doing nothing when clicked.
+- [x] **"Choose photo…" in onboarding now has a real feature behind it**
+  (fixed 2026-09-27). Deliberately scoped down to self-view-only, same as
+  the existing avatar-color choice: picking a photo never travels to other
+  peers, they still only ever see your name plus a color they derive
+  themselves from your peer_id, exactly as before. Building an actual
+  synced-photo system (sending the image to peers, a wire message, a size
+  cap, a propagation story for later changes) was discussed and explicitly
+  deferred as a separate, much bigger decision, not bundled into this fix.
+  - **Picker**: reuses the exact same `window.electronAPI.pickFile(category)`
+    dialog chat attachments already use, with a new `photo` filter category
+    in [main.cjs](frontend/electron/main.cjs)'s `FILE_PICKER_FILTERS` -
+    narrower than the existing `media` category (no video extensions),
+    restricted to exactly what can be encoded as a data: URI for display.
+  - **Storage**: a real file copied into Electron's `userData` directory
+    (`avatarFile` tracked in the same `identity.json` that already persists
+    peer_id/name), not a data: URI stuffed into `localStorage` - a real
+    photo can easily exceed localStorage's ~5-10MB per-origin quota, a file
+    on disk has no such ceiling. Three new IPC handlers
+    (`profile:getAvatarPhoto`/`setAvatarPhoto`/`clearAvatarPhoto`) reuse the
+    same capped-at-15MB read-and-encode helper the existing chat image
+    preview already used (refactored out as `readImageAsDataUrl`), and
+    switching photos cleans up the old file so stale ones don't pile up.
+  - **UI**: a new [useSelfAvatarPhoto.js](frontend/src/hooks/useSelfAvatarPhoto.js)
+    hook shared by `Onboarding.jsx`, `IconRail.jsx`, and `SettingsScreen.jsx`
+    so all three agree on the current photo without duplicating the IPC
+    round-trip. `SettingsScreen.jsx` also gained Choose/Change/Remove
+    buttons on the profile card, since onboarding only ever runs once - a
+    user needs somewhere to add or change a photo afterward too, not just
+    at first run. Correctly `disabled` with "Only available in the desktop
+    app" when `window.electronAPI` isn't present (plain browser dev mode),
+    same honest-disable pattern as every other Electron-only affordance in
+    this app.
+  - **Tests**: this logic only runs in Electron's main process and can't be
+    driven by headless-Chrome UI automation, and `dialog.showOpenDialog` is
+    a native OS dialog that can't be scripted at all - same limitation
+    already documented for the image-preview feature. Verified the same
+    way that was: a real-Node test (no mocks) against real files, covering
+    the exact copy/encode logic - valid image round-trips to the identical
+    data: URI, switching extensions deletes the stale old file, an
+    oversized file is rejected *before* being copied (not just at read
+    time), a non-image extension is rejected, and clearing removes the file
+    from disk. Separately confirmed via headless Chrome (browser dev mode,
+    no Electron) that Onboarding, the main app shell, and Settings all
+    render with zero console errors or exceptions when `window.electronAPI`
+    is absent, and that the picker button correctly shows disabled with the
+    right tooltip in that case rather than silently doing nothing.
+  - **Known gap**: no live Electron click-through of the actual file-picker
+    dialog itself (not automatable - it's a native OS dialog), so the exact
+    moment of picking a real file through the real dialog has not been
+    exercised end-to-end, only the logic on both sides of it.
 
 - [x] **Delete for me, clear a conversation, clear call history** (all
   local-only, no wire protocol changes). Three new backend routes: `DELETE
@@ -232,6 +276,59 @@ compared before building:
     real two-device testing), not by a separate live three-peer
     file-transfer click-through, a smaller but real gap in this round's
     verification, worth a dedicated pass if this area gets touched again.
+  - **Superseded 2026-09-27, see the entry right below**: the small
+    persistent 🗑/↪ icon buttons this originally shipped with turned out to
+    render as near-invisible marks on a real machine (an emoji-font
+    fallback problem, not something the app controls), and were replaced
+    entirely by a right-click context menu.
+
+- [x] **Real bug found live: the delete/forward icons (🗑/↪) rendered as
+  near-invisible marks on a real machine** (found and fixed 2026-09-27, via
+  a user screenshot showing a barely-visible dot where the icons should be).
+  Root cause: those were plain emoji characters, and emoji rendering
+  depends entirely on the OS having a working color-emoji font Chromium can
+  fall back to - not guaranteed on every Windows install, and on at least
+  one real machine it silently degraded to a tiny fallback glyph instead of
+  a visible icon, with no error anywhere to signal it. Fixed by replacing
+  both with plain inline SVGs (`TrashIcon`/`ForwardIcon` in
+  [BubbleContextMenu.jsx](frontend/src/components/BubbleContextMenu.jsx)),
+  which render identically regardless of installed system fonts - the same
+  approach `IconRail.jsx`'s own nav icons and `PeerList.jsx`'s Rescan
+  spinner already used, just not yet applied here.
+
+  **While fixing this, also rebuilt the interaction model per direct user
+  request**: instead of two small persistent hover icons next to every
+  bubble, right-clicking a message (or an eligible file) now opens one
+  combined context menu with delete and forward together - closer to how
+  desktop chat apps typically handle this, and naturally immune to the
+  icon-visibility problem above since there's no persistent icon to render
+  at all. `ForwardMenu.jsx` (the old shared component) is now fully dead
+  code and was deleted outright rather than left unused; the new
+  [BubbleContextMenu.jsx](frontend/src/components/BubbleContextMenu.jsx)
+  and its `useContextMenu()` hook are shared by `ConversationPane.jsx` and
+  `GroupConversationPane.jsx` alike, positioned at the real click
+  coordinates and clamped so it can't render off-screen near a window edge,
+  closes on outside-click or Escape.
+  - **Tests performed**: two new live end-to-end runs (three real backend
+    processes each, headless Chrome driving the real UI via the DevTools
+    Protocol, real `Input.dispatchMouseEvent` right-clicks, not synthetic
+    JS events) - one for 1:1 chat, one for group chat. Both confirmed: a
+    sent message's menu shows Delete for me + Delete for everyone + forward
+    targets (correctly excluding the peer/group you're already in); a
+    received message's menu correctly omits Delete for everyone; clicking
+    outside closes the menu; clicking a forward target actually delivers
+    the message to that peer's real backend over the real wire; clicking
+    Delete for everyone on a group message actually removed it from
+    another real member's real database. Both runs needed one fix along
+    the way that turned out to be a test-script bug, not an app bug (a
+    stale CORS-blocked origin in one run, a selector matching the sidebar's
+    own message preview text ahead of the real bubble in the other) - kept
+    here since it's a real trap worth remembering if this area gets tested
+    again: prefer scoping right-click targets to elements carrying the
+    `title="Right-click for delete/forward"` marker, not just matching text
+    content anywhere on the page.
+  - Full backend suite and frontend production build both re-verified
+    clean after these changes (backend itself wasn't touched at all here).
 
 ## Images should render like WhatsApp, not as a generic file icon (2026-09-26)
 
@@ -535,14 +632,63 @@ to what's actually still missing:
 
 ## Smaller known gaps (from earlier phases, still true)
 
-- [ ] Search bars in Nearby and Files are visual-only (Files' type-category
-  pills and text search do work; the actual search *input* boxes elsewhere
-  don't filter anything yet).
-- [ ] Call history has no pagination beyond the default 50-row limit.
-  (The delete/clear action this line used to also flag is fixed, see
-  "Fixed since this file was created" above, "Clear all" in `CallsScreen.jsx`.)
-- [ ] The bandwidth-sharing throttle during an active call is a fixed
-  0.2s-per-chunk delay, not adaptive to actual measured link contention.
+- [x] **Search bars in Nearby and Files are visual-only** (fixed
+  2026-09-27). Files' own search already worked (type-category pills and
+  filename text search both real, `FilesScreen.jsx`), the actual gap was
+  only [PeerList.jsx](frontend/src/components/PeerList.jsx)'s Nearby search
+  box: a plain `<span>` with static placeholder text, no input element, no
+  state, nothing wired to it at all. Turned into a real controlled `<input>`
+  that filters the visible peer list live by name (`ON THIS NETWORK · N`
+  now reflects the filtered count too), with an honest empty state ("No one
+  named X is on this network right now") when a search matches nobody. The
+  old placeholder ("Search people and files…") overclaimed a cross-screen
+  search that was never built and isn't now either, since this component
+  only ever has peer data available, not files, corrected to "Search
+  people…" instead of quietly leaving the overclaim in place. Verified by a
+  clean production build (no dedicated live click-through test for this one,
+  a plain controlled-input filter with no async/wire-protocol involved).
+- [x] **Call history has no pagination beyond the default limit** (fixed
+  2026-09-27). `CallsScreen.jsx` now tracks a growing `limit` (starts at 50)
+  passed to the already-existing `GET /calls/history?limit=` route (no
+  backend change needed, it already supported an arbitrary limit, the
+  frontend just never varied it), with a real "Load more" button shown
+  whenever the last fetch returned a full page (the same "there might be
+  more" signal any offset-less pager relies on without a separate total-
+  count endpoint). Deliberately re-fetches the whole `[0, limit)` window on
+  every poll tick rather than tracking a separate offset, so the existing
+  live 4s refresh and manual pagination share one code path instead of
+  needing to reconcile two: "Load more" just grows the window, refresh
+  re-fetches whatever window is currently loaded. Verified against a real
+  live backend process seeded with 75 real call records: `GET
+  /calls/history?limit=50` returned exactly 50, `?limit=100` returned all
+  75, confirming growing the limit (exactly what the button does) returns
+  genuinely more rows through the real API, not just a UI-only illusion.
+- [x] **The bandwidth-sharing throttle during an active call was a fixed
+  0.2s-per-chunk delay** (fixed 2026-09-27), now adaptive on top of that
+  same floor. [filetransfer.py](backend/app/filetransfer.py)'s
+  `_stream_to_peer` now measures how long each chunk's real
+  `writer.drain()` actually took (`write_elapsed`) and feeds it into a new
+  `throttle_sleep_seconds()`: `BASE_THROTTLE_SLEEP` (0.2s, same policy floor
+  as before, so a call always gets at least this much headroom regardless
+  of what's measured) plus up to `MAX_EXTRA_THROTTLE_SLEEP` (1.0s) more,
+  scaled by that measured latency. `drain()` only returns once the OS is
+  ready to accept more data, so an elevated drain time is a real (not
+  fabricated) sign that something, the call's own media traffic included,
+  is genuinely competing for this device's own send path right now, not the
+  literal bandwidth of the call's RTP stream itself (which this backend can
+  never observe, WebRTC media flows browser-to-browser and never touches
+  this process at all) - documented honestly as a proxy signal, not a real
+  bandwidth allocator, same as before. **Tested two ways**: a new
+  deterministic unit test on the pure `throttle_sleep_seconds()` formula
+  (no real sockets, avoids a flaky timing-based integration test trying to
+  induce real TCP backpressure) confirms it returns exactly the baseline at
+  zero measured latency, scales up with higher latency, and caps at the
+  maximum rather than growing unbounded; the pre-existing
+  `_test_bandwidth_sharing.py` integration test (real sockets, real
+  `CallService`, wall-clock timing) re-verified green unchanged, since on
+  loopback with no real contention the adaptive top-up correctly stays
+  near-zero and the flat 0.2s floor alone still produces the same
+  measurable slowdown it always did.
 
 ## Testing still needed
 

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { api } from "../api";
 import { paletteAt, initials, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
 import { useConversations } from "../hooks/useConversations";
+import { useSelfAvatarPhoto } from "../hooks/useSelfAvatarPhoto";
 
 // Matches design screens 6.1/6.3/6.4/6.5, but NOT verbatim: the design's
 // Privacy screen claims "Encrypted, even at home" with X25519/ChaCha20
@@ -14,10 +15,27 @@ export default function SettingsScreen({ me }) {
   const [view, setView] = useState("home");
   const avatarIndex = Number(localStorage.getItem(SELF_AVATAR_INDEX_KEY)) || 0;
   const avatar = paletteAt(avatarIndex);
+  const { photo, setPhoto, hasElectron } = useSelfAvatarPhoto();
 
   if (view === "privacy") return <PrivacyView onBack={() => setView("home")} />;
   if (view === "notifications") return <NotificationsView onBack={() => setView("home")} />;
   if (view === "about") return <AboutView onBack={() => setView("home")} />;
+
+  async function handleChoosePhoto() {
+    const path = await window.electronAPI.pickFile("photo");
+    if (!path) return;
+    const dataUrl = await window.electronAPI.setAvatarPhoto(path);
+    if (!dataUrl) {
+      window.alert("Couldn't use that image (too large, or not a supported photo format).");
+      return;
+    }
+    setPhoto(dataUrl);
+  }
+
+  async function handleRemovePhoto() {
+    await window.electronAPI.clearAvatarPhoto();
+    setPhoto(null);
+  }
 
   return (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", padding: "22px 26px", gap: 20, overflowY: "auto" }}>
@@ -26,14 +44,30 @@ export default function SettingsScreen({ me }) {
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 14, padding: 16, borderRadius: 18, background: "var(--surface)", border: "1px solid var(--border-soft)" }}>
-        <span style={{ width: 56, height: 56, flexShrink: 0, borderRadius: 99, background: avatar.bg, color: avatar.text, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Instrument Serif, serif", fontSize: 22 }}>
-          {initials(me?.device_name || "?")}
+        <span style={{ width: 56, height: 56, flexShrink: 0, borderRadius: 99, overflow: "hidden", background: photo ? "var(--surface-2)" : avatar.bg, color: avatar.text, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Instrument Serif, serif", fontSize: 22 }}>
+          {photo ? <img src={photo} alt="" style={{ width: "100%", height: "100%", objectFit: "cover" }} /> : initials(me?.device_name || "?")}
         </span>
         <div style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
           <div style={{ fontWeight: 600, fontSize: 16.5 }}>{me?.device_name || "This device"}</div>
           <div className="mono" style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
             {me?.peer_id ? `${me.peer_id.slice(0, 8)} · this device` : "this device"}
           </div>
+        </div>
+        <div style={{ flex: 1 }} />
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button
+            onClick={handleChoosePhoto}
+            disabled={!hasElectron}
+            title={hasElectron ? undefined : "Only available in the desktop app"}
+            style={{ padding: "7px 12px", borderRadius: 10, background: "var(--surface-2)", border: "none", fontSize: 12, fontWeight: 600, color: hasElectron ? "var(--text-strong)" : "var(--text-3)", cursor: hasElectron ? "pointer" : "not-allowed" }}
+          >
+            {photo ? "Change photo" : "Choose photo"}
+          </button>
+          {photo && (
+            <button onClick={handleRemovePhoto} style={{ padding: "7px 12px", borderRadius: 10, background: "transparent", border: "1px solid var(--border)", fontSize: 12, fontWeight: 600, color: "var(--danger)" }}>
+              Remove
+            </button>
+          )}
         </div>
       </div>
 

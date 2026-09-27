@@ -45,7 +45,7 @@ export const api = {
   callIce: (callId, candidate) => request(`/calls/${callId}/ice`, { method: "POST", body: JSON.stringify({ candidate }) }),
   callEnd: (callId, reason = "ended") => request(`/calls/${callId}/end`, { method: "POST", body: JSON.stringify({ reason }) }),
   callHistory: (peerId) => request(`/calls/history/${peerId}`),
-  allCallHistory: () => request("/calls/history"),
+  allCallHistory: (limit = 50) => request(`/calls/history?limit=${limit}`),
   clearCallHistory: () => request("/calls/history", { method: "DELETE" }),
   createGroup: (name, members) => request("/groups", { method: "POST", body: JSON.stringify({ name, members }) }),
   listGroups: () => request("/groups"),
