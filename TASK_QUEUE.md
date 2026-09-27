@@ -256,10 +256,10 @@ compared before building:
     (`update_file_status(..., saved_path=...)`), a sent file's original
     path only ever lives in the backend's in-memory `_outgoing_paths`
     (same limitation the earlier file-retry fix already ran into).
-  - **A currently-offline peer isn't offered in the picker at all.** Unlike
-    a normal send from the composer, a forward with no visible confirmation
-    that it silently queued would look like it went nowhere, so the list
-    only shows who's actually reachable right now.
+  - **A currently-offline peer wasn't offered in the picker at all**
+    (reversed 2026-09-28, see the entry below the icon/context-menu one -
+    this restriction turned out to be inconsistent with how the rest of the
+    app already works and was removed).
   - **Verified live, message forwarding through the real UI**: three real
     backend instances (Alice/Bob/Carol) driven through three real headless
     Chrome windows via the DevTools Protocol, same technique as the
@@ -329,6 +329,47 @@ compared before building:
     content anywhere on the page.
   - Full backend suite and frontend production build both re-verified
     clean after these changes (backend itself wasn't touched at all here).
+
+- [x] **Forward should work regardless of whether the target is currently
+  online** (fixed 2026-09-28, found from a screenshot showing an offline
+  conversation's forward list saying "No one else on this network right
+  now"). The original restriction (forward candidates limited to
+  `usePeers()`'s live list only) was inconsistent with how the rest of the
+  app already behaves: the plain composer has never gated sending on
+  whether the recipient is online, `messaging.py`'s `_flush_pending_loop`
+  already queues and auto-delivers to anyone offline, and forwarding was
+  always just a call to that same `api.sendMessage()`/`api.sendFile()`. So
+  the "no visible confirmation it queued" concern that justified excluding
+  offline peers applied equally to a normal send, which was never treated
+  as a problem there - there was no real reason forward should be more
+  cautious than the composer it's built on top of.
+
+  Fixed in both `ConversationPane.jsx` and `GroupConversationPane.jsx`: the
+  forward candidate list now merges `usePeers()`'s live list with
+  `useConversations()`'s persisted history (anyone with a `known_peers` row,
+  online or not), deduped by `peer_id`, live entries winning on name since
+  they're the freshest source. `GroupConversationPane.jsx` needed a new
+  `conversations` prop threaded down from `App.jsx` (which already computes
+  it for `ChatsListPanel`/the offline-peer fallback) rather than a second
+  independent fetch. `BubbleContextMenu.jsx`'s empty-state text changed from
+  "No one else on this network right now" to "Nobody else to forward to
+  yet", since the old wording became actively wrong once offline contacts
+  are listed.
+
+  **Verified live end-to-end** (three real backend processes): established
+  real conversation history between Alice and Bob, then killed Bob's
+  process entirely and waited for discovery's TTL to actually expire him
+  from Alice's live peer list (not just assumed) - confirmed via `GET
+  /peers` that Bob was genuinely gone. Opened a different, still-online
+  conversation in the real UI, right-clicked a message, and confirmed
+  Bob still appeared as a real forward target despite being offline.
+  Clicked to forward to him: confirmed via `GET /messages/{bob}` that the
+  message landed with `status: "pending"` (queued, not lost). Restarted
+  Bob's real backend and confirmed, via both Alice's and Bob's own
+  databases, that the message flipped to `status: "delivered"` and
+  genuinely arrived in Bob's real history within a few seconds of him
+  reconnecting - the same flush-loop guarantee 1:1 chat already relies on,
+  now proven to cover a forward too, not just a normal send.
 
 ## Images should render like WhatsApp, not as a generic file icon (2026-09-26)
 

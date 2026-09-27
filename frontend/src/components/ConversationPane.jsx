@@ -7,6 +7,7 @@ import ImagePreview from "./ImagePreview";
 import { isImageFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
 import { usePeers } from "../hooks/usePeers";
 import { useGroups } from "../hooks/useGroups";
+import { useConversations } from "../hooks/useConversations";
 import BubbleContextMenu, { useContextMenu } from "./BubbleContextMenu";
 
 function statusGlyph(status) {
@@ -44,6 +45,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   const [headerMenuOpen, setHeaderMenuOpen] = useState(false);
   const { peers: livePeers } = usePeers();
   const groups = useGroups();
+  const conversations = useConversations();
   const bottomRef = useRef(null);
   const peerIdRef = useRef(peer?.peer_id);
   peerIdRef.current = peer?.peer_id;
@@ -151,15 +153,23 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
     api.clearConversation(peer.peer_id).catch(() => {});
   }
 
-  // Anyone else currently discoverable, excluding this same conversation,
-  // plus every group this device is in - forwarding to a currently-offline
-  // peer isn't offered here since there's no picker feedback for "queued,
-  // will send later" yet; unlike a plain send from the composer, a forward
-  // with no visible confirmation that silently queued would be confusing.
-  const forwardCandidates = [
-    ...livePeers.filter((p) => p.peer_id !== peer.peer_id).map((p) => ({ id: p.peer_id, name: p.name, kind: "peer" })),
-    ...groups.map((g) => ({ id: g.group_id, name: g.name, kind: "group" })),
-  ];
+  // Anyone this device has ever talked to or can currently see, excluding
+  // this same conversation, plus every group this device is in. Offline
+  // peers are included on purpose: forwarding just calls the same
+  // api.sendMessage()/sendFile() the plain composer already uses, which
+  // already queues for an offline peer and delivers automatically once
+  // they reconnect (messaging.py's _flush_pending_loop) - the composer
+  // never gated sending on someone being online, so forwarding shouldn't
+  // either. livePeers wins on name when both know about the same peer_id,
+  // since it's the freshest source.
+  const peerCandidates = new Map();
+  for (const c of conversations) {
+    if (c.peer_id !== peer.peer_id) peerCandidates.set(c.peer_id, { id: c.peer_id, name: c.name || "Unknown", kind: "peer" });
+  }
+  for (const p of livePeers) {
+    if (p.peer_id !== peer.peer_id) peerCandidates.set(p.peer_id, { id: p.peer_id, name: p.name, kind: "peer" });
+  }
+  const forwardCandidates = [...peerCandidates.values(), ...groups.map((g) => ({ id: g.group_id, name: g.name, kind: "group" }))];
 
   function handleForwardMessage(msg, target) {
     if (target.kind === "group") api.sendGroupMessage(target.id, msg.body).catch(() => {});

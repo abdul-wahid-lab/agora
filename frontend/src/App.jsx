@@ -28,6 +28,12 @@ export default function App() {
   const [active, setActive] = useState("nearby");
   const [selectedPeerId, setSelectedPeerId] = useState(null);
   const [selectedGroupId, setSelectedGroupId] = useState(null);
+  // Nearby's own view state, deliberately separate from selectedPeerId
+  // (which Chats also reads, so a peer selected there stays selected if you
+  // switch tabs and back) - pressing the Nearby nav icon always resets to
+  // the radar view, regardless of whatever peer was last viewed there.
+  const [nearbyShowingRadar, setNearbyShowingRadar] = useState(true);
+  const [scanOverlayOpen, setScanOverlayOpen] = useState(false);
   const [me, setMe] = useState(null);
   const [peerCount, setPeerCount] = useState(0);
   const [connected, setConnected] = useState(false);
@@ -116,11 +122,23 @@ export default function App() {
 
   function handleSelectTab(tab) {
     setActive(tab);
+    if (tab === "nearby") setNearbyShowingRadar(true);
   }
 
   function handleSelectPeer(peerId) {
     setSelectedGroupId(null);
     setSelectedPeerId(peerId);
+    setNearbyShowingRadar(false);
+  }
+
+  // The real rescan (usePeers().refresh, a real GET /peers call) drives the
+  // overlay's lifetime directly - it opens right before the request starts
+  // and closes the instant the promise resolves, never a fixed timer, so
+  // the radar stays up for exactly as long as the real work actually takes.
+  async function handleRescan() {
+    setScanOverlayOpen(true);
+    await rescan();
+    setScanOverlayOpen(false);
   }
 
   function handleSelectGroup(groupId) {
@@ -141,9 +159,15 @@ export default function App() {
 
         {active === "nearby" && (
           <>
-            <PeerList peers={peers} selected={selectedPeerId} onSelect={handleSelectPeer} onRescan={rescan} scanning={rescanning} />
-            <ConversationPane peer={selectedPeer} online={selectedPeerOnline} onOpenCall={handleOpenCall} emptyState={<ScanRadar peers={peers} />} />
-            <InfoSidebar peer={selectedPeer} online={selectedPeerOnline} />
+            <PeerList peers={peers} selected={selectedPeerId} onSelect={handleSelectPeer} onRescan={handleRescan} scanning={rescanning} />
+            {nearbyShowingRadar ? (
+              <ScanRadar peers={peers} />
+            ) : (
+              <>
+                <ConversationPane peer={selectedPeer} online={selectedPeerOnline} onOpenCall={handleOpenCall} emptyState={<ScanRadar peers={peers} />} />
+                <InfoSidebar peer={selectedPeer} online={selectedPeerOnline} />
+              </>
+            )}
           </>
         )}
 
@@ -164,6 +188,7 @@ export default function App() {
                 onStartCall={(media) => selectedGroup && startGroupCall(selectedGroup, media)}
                 me={me}
                 livePeers={peers}
+                conversations={conversations}
                 otherGroups={groups.filter((g) => g.group_id !== selectedGroupId)}
               />
             ) : (
@@ -213,6 +238,12 @@ export default function App() {
         onDecline={declineIncomingGroupCall}
         registerVideoRef={registerVideoRef}
       />
+
+      {scanOverlayOpen && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex" }}>
+          <ScanRadar peers={peers} />
+        </div>
+      )}
     </div>
   );
 }

@@ -113,7 +113,7 @@ export default function BubbleContextMenu({ position, onClose, candidates, onFor
           <div style={{ padding: "4px 10px 6px", font: '600 10px/1 "IBM Plex Mono", monospace', letterSpacing: "0.08em", color: "var(--text-3)" }}>
             FORWARD TO
           </div>
-          {candidates.length === 0 && <div style={{ padding: "6px 10px", fontSize: 12, color: "var(--text-3)" }}>No one else on this network right now</div>}
+          {candidates.length === 0 && <div style={{ padding: "6px 10px", fontSize: 12, color: "var(--text-3)" }}>Nobody else to forward to yet</div>}
           {candidates.map((c) => (
             <button
               key={c.id}
