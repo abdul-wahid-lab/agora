@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { paletteAt, initials, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
 import { useConversations } from "../hooks/useConversations";
@@ -121,6 +121,20 @@ function Toggle({ on, disabled }) {
 function PrivacyView({ onBack }) {
   const conversations = useConversations();
   const [clearing, setClearing] = useState(false);
+  const [blocked, setBlocked] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    function load() {
+      api.blockedPeers().then((list) => !cancelled && setBlocked(list)).catch(() => {});
+    }
+    load();
+    const interval = setInterval(load, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, []);
 
   async function handleClearAll() {
     if (conversations.length === 0) return;
@@ -128,6 +142,11 @@ function PrivacyView({ onBack }) {
     setClearing(true);
     await Promise.all(conversations.map((c) => api.clearConversation(c.peer_id).catch(() => {})));
     setClearing(false);
+  }
+
+  async function handleUnblock(peerId) {
+    await api.unblockPeer(peerId).catch(() => {});
+    setBlocked((prev) => prev.filter((p) => p.peer_id !== peerId));
   }
 
   return (
@@ -161,10 +180,35 @@ function PrivacyView({ onBack }) {
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
-        <div style={{ font: '600 10.5px/1 "IBM Plex Mono", monospace', letterSpacing: "0.1em", color: "var(--text-3)", padding: "0 2px" }}>BLOCKING</div>
-        <div style={{ padding: 16, borderRadius: 18, background: "var(--surface)", border: "1px solid var(--border-soft)", fontSize: 13, color: "var(--text-3)", lineHeight: 1.5 }}>
-          Not built yet, there's no way to block a peer_id today. Anyone on this network can message or call you. Real feature, queued.
+        <div style={{ font: '600 10.5px/1 "IBM Plex Mono", monospace', letterSpacing: "0.1em", color: "var(--text-3)", padding: "0 2px" }}>
+          BLOCKED PEERS{blocked.length ? ` · ${blocked.length}` : ""}
         </div>
+        {/* Blocking itself happens from the Conversation menu on an open
+            chat - this is the real management view for what's already
+            blocked, matching "clear all history" above rather than a place
+            to block someone new. */}
+        {blocked.length === 0 ? (
+          <div style={{ padding: 16, borderRadius: 18, background: "var(--surface)", border: "1px solid var(--border-soft)", fontSize: 13, color: "var(--text-3)", lineHeight: 1.5 }}>
+            Nobody is blocked. Open a conversation with someone and use Conversation → Block Peer from the top menu to block them.
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", background: "var(--surface)", border: "1px solid var(--border-soft)", borderRadius: 18, overflow: "hidden" }}>
+            {blocked.map((p, i) => (
+              <div key={p.peer_id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: 16, borderBottom: i < blocked.length - 1 ? "1px solid var(--divider)" : "none" }}>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  <div style={{ fontSize: 14, fontWeight: 600 }}>{p.name}</div>
+                  <div className="mono" style={{ fontSize: 11, color: "var(--text-3)" }}>blocked {new Date(p.blocked_at * 1000).toLocaleDateString()}</div>
+                </div>
+                <button
+                  onClick={() => handleUnblock(p.peer_id)}
+                  style={{ padding: "7px 13px", borderRadius: 10, background: "var(--surface-2)", border: "none", color: "var(--text-strong)", fontSize: 12.5, fontWeight: 700 }}
+                >
+                  Unblock
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

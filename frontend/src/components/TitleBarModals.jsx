@@ -1,5 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
+import { extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
+import { CHAT_THEME_COLORS, getChatTheme, setChatTheme } from "../lib/chatTheme";
 
 // Shared modal chrome for every File/Network-menu dialog below - a real
 // centered dialog (not a fake inline placeholder), closes on backdrop click
@@ -207,6 +209,139 @@ export function ShortcutsModal({ onClose }) {
           <span className="mono" style={{ fontSize: 11.5, color: "var(--text-3)" }}>{key}</span>
         </div>
       ))}
+    </ModalOverlay>
+  );
+}
+
+// -- Conversation > Media, Links, and Docs -----------------------------------
+// Scoped to this one conversation, distinct from FilesScreen.jsx's global
+// browser across every conversation. Real data (GET /files/{peer_id}),
+// no new backend needed.
+export function MediaLinksDocsModal({ peerId, peerName, onClose }) {
+  const [files, setFiles] = useState(null);
+
+  useEffect(() => {
+    api.files(peerId).then(setFiles).catch(() => setFiles([]));
+  }, [peerId]);
+
+  return (
+    <ModalOverlay title={`Media, Links, and Docs with ${peerName}`} onClose={onClose}>
+      {files === null && <div style={{ fontSize: 13, color: "var(--text-3)" }}>Loading...</div>}
+      {files?.length === 0 && <div style={{ fontSize: 13, color: "var(--text-3)" }}>No files shared in this conversation yet.</div>}
+      {files?.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {files.map((f) => {
+            const { bg, text } = extStyle(f.filename);
+            return (
+              <div key={f.transfer_id} style={{ display: "flex", alignItems: "center", gap: 11, padding: "9px 4px", borderBottom: "1px solid var(--divider)" }}>
+                <span style={{ width: 34, height: 34, flexShrink: 0, borderRadius: 10, background: bg, display: "flex", alignItems: "center", justifyContent: "center", font: '600 9px/1 "IBM Plex Mono", monospace', color: text }}>
+                  {(f.filename.split(".").pop() || "").slice(0, 3).toUpperCase()}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.filename}</div>
+                  <div className="mono" style={{ fontSize: 10.5, color: "var(--text-3)" }}>
+                    {formatSize(f.size)} · {f.direction === "sent" ? "sent" : "received"} · {f.status}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </ModalOverlay>
+  );
+}
+
+// -- Conversation > Disappearing Messages... ---------------------------------
+// Deliberately local-only - see disappearing.py's own module docstring for
+// why this doesn't try to make the peer's copy vanish too.
+const DISAPPEARING_OPTIONS = [
+  { label: "Off", seconds: null },
+  { label: "1 hour", seconds: 3600 },
+  { label: "24 hours", seconds: 86400 },
+  { label: "7 days", seconds: 7 * 86400 },
+  { label: "90 days", seconds: 90 * 86400 },
+];
+
+export function DisappearingMessagesModal({ peerId, peerName, onClose }) {
+  const [current, setCurrent] = useState(undefined);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.getDisappearing(peerId).then((r) => setCurrent(r.seconds)).catch(() => setCurrent(null));
+  }, [peerId]);
+
+  async function choose(seconds) {
+    setSaving(true);
+    await api.setDisappearing(peerId, seconds).catch(() => {});
+    setCurrent(seconds);
+    setSaving(false);
+  }
+
+  return (
+    <ModalOverlay title="Disappearing Messages" onClose={onClose} width={380}>
+      <div style={{ fontSize: 12.5, color: "var(--text-2)", lineHeight: 1.5 }}>
+        Messages older than the time you choose will be deleted automatically - on this device only. {peerName}'s own copy is not affected unless they set the same thing on their side.
+      </div>
+      {current === undefined ? (
+        <div style={{ fontSize: 13, color: "var(--text-3)" }}>Loading...</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {DISAPPEARING_OPTIONS.map((opt) => (
+            <button
+              key={opt.label}
+              onClick={() => choose(opt.seconds)}
+              disabled={saving}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                textAlign: "left",
+                padding: "10px 12px",
+                borderRadius: 10,
+                background: current === opt.seconds ? "var(--surface-2)" : "transparent",
+                border: "none",
+                fontSize: 13.5,
+                fontWeight: 600,
+                color: "var(--text-strong)",
+              }}
+            >
+              {opt.label}
+              {current === opt.seconds && <span>✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </ModalOverlay>
+  );
+}
+
+// -- Conversation > Chat Theme... ---------------------------------------------
+// Local-only, like the avatar-color choice - a color you see, not one the
+// peer ever knows about.
+export function ChatThemeModal({ peerId, onClose, onChange }) {
+  const [current, setCurrent] = useState(() => getChatTheme(peerId).id);
+
+  function choose(id) {
+    setChatTheme(peerId, id);
+    setCurrent(id);
+    onChange?.();
+  }
+
+  return (
+    <ModalOverlay title="Chat Theme" onClose={onClose} width={340}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {CHAT_THEME_COLORS.map((c) => (
+          <button
+            key={c.id}
+            onClick={() => choose(c.id)}
+            style={{ display: "flex", alignItems: "center", gap: 12, textAlign: "left", padding: "9px 12px", borderRadius: 10, background: current === c.id ? "var(--surface-2)" : "transparent", border: "none", fontSize: 13.5, fontWeight: 600, color: "var(--text-strong)" }}
+          >
+            <span style={{ width: 22, height: 22, borderRadius: 99, background: c.bg, flexShrink: 0 }} />
+            {c.label}
+            {current === c.id && <span style={{ marginLeft: "auto" }}>✓</span>}
+          </button>
+        ))}
+      </div>
     </ModalOverlay>
   );
 }

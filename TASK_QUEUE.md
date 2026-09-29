@@ -82,26 +82,37 @@ stale entries pile up.
   the "⋯" button itself was removed as the now-redundant second path to it -
   both the correction and the follow-up move are done.
 
-- [ ] **Per-chat "⋯" quick-actions, WhatsApp-reference** (noted 2026-09-28,
-  from a real WhatsApp screenshot the user shared: Search, Media/links/docs,
-  Disappearing messages, Chat theme, More). Not built now - queued for
-  later, kept here as a concrete reference rather than a vague "add more to
-  the menu" note. Of the five: "Search" is covered by the Conversation
-  menu's own "Search in Conversation..." being built alongside this entry.
-  The other three are genuinely new, real features, none built anywhere in
-  Agora today:
-  - **Media, links, and docs** - a filtered view scoped to *this one*
-    conversation's shared files/images (distinct from `FilesScreen.jsx`,
-    which is a global browser across every conversation) - real data
-    already exists (`GET /files/{peer_id}`), just needs a per-conversation
-    filtered UI, no new backend.
-  - **Disappearing messages** - real backend work: messages that
-    auto-delete after a set time, needs a per-conversation (or per-message)
-    expiry mechanism and a background sweep, not built at all today.
-  - **Chat theme** - lowest priority of the three, a per-conversation color
-    customization, purely cosmetic - real if built (persisted per peer_id,
-    actually applied to that conversation's bubble colors), not a
-    placeholder, just not scoped or started.
+- [x] **Per-chat "⋯" quick-actions, WhatsApp-reference** (fixed 2026-09-29).
+  All three real, new items from the reference screenshot are built,
+  reachable from the Conversation menu next to Search/Export/Mute:
+  - **Media, links, and docs** - `MediaLinksDocsModal` in
+    [TitleBarModals.jsx](frontend/src/components/TitleBarModals.jsx), a
+    filtered view scoped to the open 1:1 conversation, reusing the existing
+    `GET /files/{peer_id}` - no new backend needed, exactly as scoped.
+  - **Disappearing messages** - new [disappearing.py](backend/app/disappearing.py)
+    (`DisappearingMessagesService`), a real periodic background sweep
+    against a new `disappearing_settings` table (`PUT`/`GET
+    /conversations/{peer_id}/disappearing`), deliberately **local-only**:
+    this device deletes its own copy of expired messages, nothing is sent
+    telling the peer to do the same - stated plainly in the modal's own
+    copy rather than implying a two-sided guarantee that doesn't exist. A
+    live `messages_expired` event lets an already-open conversation drop
+    the expired bubbles immediately instead of waiting for the next poll.
+  - **Chat theme** - new [lib/chatTheme.js](frontend/src/lib/chatTheme.js),
+    local-only like the avatar-color choice (never sent to the peer), a
+    small real palette applied to that conversation's actual sent-message
+    bubble color, not a decorative swatch picker with no effect.
+  - **Tests**: a new automated suite,
+    [_test_disappearing.py](backend/app/_test_disappearing.py) (6 tests: the
+    setting is real and per-peer not global, the sweep actually deletes an
+    expired message with no manual trigger, a message under the duration
+    survives, a peer with no setting configured is completely unaffected,
+    the live-update callback fires with the real peer_id/count, turning it
+    off removes the setting rather than storing a null sentinel). Chat
+    theme verified live: picked a real color in the running UI, confirmed
+    via `getComputedStyle` that the actual sent-bubble background changed
+    to the exact expected RGB value, not just that the picker recorded a
+    choice.
 
 - [x] **The top menu bar ("Agora File Conversation Network View Help") is
   now real** (fixed 2026-09-28). Every item below is either a new UI
@@ -141,8 +152,10 @@ stale entries pile up.
   History with this Peer (real dedicated `GET /calls/history/{peer_id}`
   endpoint, `CallsScreen.jsx` gained a `filterPeerId` prop and a real filter
   chip instead of client-side filtering the combined list) · Block Peer
-  (disabled, links to the existing queued **Block a peer** entry, not a
-  second copy of it).
+  (at the time this menu was first built, disabled and linking to the
+  queued **Block a peer** entry below - that entry is now built for real,
+  see its own `- [x]` entry, and this menu item now performs the real
+  block/unblock action).
 
   **Network**: Rescan for Peers (same real action + radar overlay already
   built) · My Device Info (real `GET /me` + avatar color) · Known Peers
@@ -775,22 +788,48 @@ to what's actually still missing:
   the phone reimplements the same wire protocol natively rather than running
   the Python backend on-device. Deliberately deferred until desktop is
   fully validated on two real machines.
-- [ ] **Block a peer** (requested 2026-09-28, explicitly deferred by the user
-  to build later, not now). Right now anyone on the LAN can message or call
-  this device, no way to stop a specific peer_id - `SettingsScreen.jsx`'s
-  Privacy view already has an honest disabled placeholder for this
-  ("Not built yet, there's no way to block a peer_id today... Real feature,
-  queued"), this is that same gap made into a real queue item. Real
-  backend work, not just a UI switch: needs a `blocked_peers` table, and
-  every real entry point a blocked peer could otherwise reach has to
-  actually check it and refuse - `messaging.py`'s incoming message handler,
-  `calling.py`'s incoming offer handler, `filetransfer.py`'s incoming file
-  offer handler - a block that only hides someone from the peer list while
-  still silently accepting their messages/calls/files underneath wouldn't
-  be a real block. Where this surfaces in the UI (a button on a peer's
-  `InfoSidebar`, a right-click option, the already-drawn Settings toggle,
-  or more than one of these) is also still an open decision, not just the
-  backend enforcement.
+- [x] **Block a peer** (fixed 2026-09-29). Real backend enforcement, not a
+  UI-only switch: a new `blocked_peers` table in
+  [storage.py](backend/app/storage.py), checked from a single real choke
+  point rather than separately in each feature - every peer-to-peer channel
+  (chat, files, calls, group traffic) rides the same
+  [messaging.py](backend/app/messaging.py) WebSocket connection, so one
+  check in `_handle_inbound` (incoming) and `_get_connection` (outgoing)
+  refuses all of it at once. The check runs on **every inbound frame**, not
+  just at "hello" time - a connection already open before the block happens
+  still gets cut off on its very next frame, not just on new connections.
+  Enforcement is bidirectional: a blocked peer can't reach this device, and
+  this device can't reach them either, until unblocked. Reachable from the
+  Conversation menu (Block Peer / Unblock Peer, with a real confirm
+  dialog), from a live banner in the open conversation with its own
+  Unblock button, and from `SettingsScreen.jsx`'s Privacy view (its old
+  disabled placeholder replaced with a real "BLOCKED PEERS · N" list and
+  working Unblock buttons). A blocked peer also disappears from the live
+  Nearby/peer list, and the conversation's composer disables itself with an
+  explanatory placeholder.
+  - **Real bug found and fixed along the way**:
+    [filetransfer.py](backend/app/filetransfer.py)'s offer-response wait
+    had no timeout - blocking a peer mid-transfer closes the connection
+    right after "hello," and `send_control()` can report success at the
+    socket-buffer level even though the receiving side already hung up,
+    so the offer-wait was left waiting forever for a response that would
+    never come. Fixed with a 60s safety-net timeout (`asyncio.wait_for`),
+    generous enough to never rush a real person's decision to accept or
+    decline a file, only to catch a peer that will truly never respond.
+  - **Tests**: a new automated suite,
+    [_test_blocking.py](backend/app/_test_blocking.py) (7 tests against
+    real localhost sockets, full alice/bob stacks): baseline delivery
+    before any block, the block is really recorded, a blocked peer's
+    message never reaches the recipient's store, outgoing messages to a
+    blocked peer stay "pending" and never arrive (bidirectional), a file
+    offer to a blocked peer is refused rather than hanging, a call to a
+    blocked peer is refused, and unblocking restores real delivery. Also
+    verified live end-to-end in the running UI against two real backend
+    processes (not just the automated suite): blocking through the real
+    menu, confirming the real banner/disabled composer/hidden-from-peer-list
+    behavior, confirming a real message sent while blocked never arrives,
+    then confirming delivery genuinely resumes after unblocking - all 8
+    live assertions passed.
 
 ## Smaller known gaps (from earlier phases, still true)
 

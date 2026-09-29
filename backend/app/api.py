@@ -33,6 +33,7 @@ from pydantic import BaseModel
 
 from app.calling import CallService, CallState
 from app.deletion import DeleteService
+from app.disappearing import DisappearingMessagesService
 from app.discovery import PeerDiscovery
 from app.filetransfer import FileTransferService, IncomingFileOffer
 from app.groups import GroupService
@@ -153,6 +154,13 @@ def _on_remote_delete(peer_id: str, msg_id: str) -> None:
     asyncio.create_task(_broadcast({"type": "message_deleted", "peer_id": peer_id, "msg_id": msg_id}))
 
 
+def _on_disappearing_swept(peer_id: str, count: int) -> None:
+    # Already deleted from this device's own store by the time this fires -
+    # lets an already-open conversation drop the expired bubbles live rather
+    # than waiting for the next history poll.
+    asyncio.create_task(_broadcast({"type": "messages_expired", "peer_id": peer_id, "count": count}))
+
+
 def _on_group_invite(group) -> None:
     asyncio.create_task(
         _broadcast({"type": "group_invite", "group_id": group.group_id, "name": group.name, "members": [{"peer_id": m.peer_id, "name": m.name} for m in group.members]})
@@ -216,6 +224,7 @@ calling = CallService(
     on_collision_yield=_on_collision_yield,
 )
 deletion = DeleteService(discovery, messaging, store, on_remote_delete=_on_remote_delete)
+disappearing = DisappearingMessagesService(store, on_swept=_on_disappearing_swept)
 group_service = GroupService(
     discovery,
     messaging,
@@ -260,6 +269,7 @@ async def startup() -> None:
     await asyncio.to_thread(discovery.start)
     await messaging.start()
     await deletion.start()
+    await disappearing.start()
     await file_transfer.start()
     await group_service.start()
     _peer_watch_task = asyncio.create_task(_watch_peers())
@@ -271,6 +281,7 @@ async def shutdown() -> None:
         _peer_watch_task.cancel()
     await group_service.stop()
     await file_transfer.stop()
+    await disappearing.stop()
     await deletion.stop()
     await messaging.stop()
     discovery.stop()
@@ -286,7 +297,12 @@ async def get_me():
 
 @app.get("/peers")
 async def get_peers():
-    return [{"peer_id": p.peer_id, "name": p.name, "address": p.address, "port": p.port, "source": p.source} for p in discovery.registry.list()]
+    blocked = {p["peer_id"] for p in await store.list_blocked_peers()}
+    return [
+        {"peer_id": p.peer_id, "name": p.name, "address": p.address, "port": p.port, "source": p.source}
+        for p in discovery.registry.list()
+        if p.peer_id not in blocked
+    ]
 
 
 @app.get("/peers/known")
@@ -295,6 +311,31 @@ async def get_known_peers():
     GET /conversations) - backs the Network menu's "Known Peers" view and
     contacts export."""
     return await store.list_known_peers()
+
+
+class BlockPeerBody(BaseModel):
+    name: str
+
+
+@app.post("/peers/{peer_id}/block")
+async def block_peer(peer_id: str, body: BlockPeerBody):
+    """The real enforcement lives in messaging.py (the single choke point
+    every peer-to-peer channel rides through) - this just records the
+    decision. Hiding them from GET /peers above is the visible half; refusing
+    their actual traffic is the half that makes this a real block."""
+    await store.block_peer(peer_id, body.name)
+    return {"status": "blocked"}
+
+
+@app.post("/peers/{peer_id}/unblock")
+async def unblock_peer(peer_id: str):
+    await store.unblock_peer(peer_id)
+    return {"status": "unblocked"}
+
+
+@app.get("/peers/blocked")
+async def get_blocked_peers():
+    return await store.list_blocked_peers()
 
 
 class ImportContactsBody(BaseModel):
@@ -450,6 +491,21 @@ async def clear_conversation(peer_id: str):
     storage.py's clear_conversation docstring for why."""
     await store.clear_conversation(peer_id)
     return {"status": "cleared"}
+
+
+class DisappearingBody(BaseModel):
+    seconds: Optional[int] = None  # None turns it off
+
+
+@app.put("/conversations/{peer_id}/disappearing")
+async def set_disappearing(peer_id: str, body: DisappearingBody):
+    await store.set_disappearing_duration(peer_id, body.seconds)
+    return {"status": "ok", "seconds": body.seconds}
+
+
+@app.get("/conversations/{peer_id}/disappearing")
+async def get_disappearing(peer_id: str):
+    return {"seconds": await store.get_disappearing_duration(peer_id)}
 
 
 @app.get("/conversations")

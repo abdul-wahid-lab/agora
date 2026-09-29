@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, connectEvents } from "../api";
 import { paletteFor, initials } from "../lib/avatar";
+import { getChatTheme } from "../lib/chatTheme";
+import { useIsPeerBlocked } from "../hooks/useIsPeerBlocked";
 import SecurityGate from "./SecurityGate";
 import FileOpenActions from "./FileOpenActions";
 import ImagePreview from "./ImagePreview";
@@ -46,6 +48,8 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   const { peers: livePeers } = usePeers();
   const groups = useGroups();
   const conversations = useConversations();
+  const [blockVersion, setBlockVersion] = useState(0);
+  const isBlocked = useIsPeerBlocked(peer?.peer_id, blockVersion);
   const bottomRef = useRef(null);
   const peerIdRef = useRef(peer?.peer_id);
   peerIdRef.current = peer?.peer_id;
@@ -80,6 +84,9 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
       }
       if (evt.type === "message_deleted" && evt.peer_id === current) {
         setMessages((prev) => prev.filter((m) => m.msg_id !== evt.msg_id));
+      }
+      if (evt.type === "messages_expired" && evt.peer_id === current) {
+        api.history(current).then(setMessages).catch(() => {});
       }
       if (evt.type === "file_progress") {
         setProgressByTransfer((prev) => ({ ...prev, [evt.transfer_id]: evt.bytes_sent / evt.total }));
@@ -229,6 +236,11 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   }
 
   const { bg, text } = paletteFor(peer.peer_id);
+  // Read fresh on every render (cheap, synchronous localStorage) rather than
+  // memoized - this component already re-renders on every poll/WS tick, so
+  // a theme change made in the Conversation menu's modal shows up within
+  // that same natural cadence with no extra cross-component plumbing.
+  const chatTheme = getChatTheme(peer.peer_id);
   const query = searchOpen ? searchQuery.trim().toLowerCase() : "";
   const timeline = [
     ...messages.map((m) => ({ kind: "message", ts: m.ts, data: m })),
@@ -269,6 +281,23 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
           </button>
         </div>
       </div>
+
+      {isBlocked && (
+        <div style={{ flex: "0 0 auto", padding: "12px 20px", borderBottom: "1px solid var(--divider)", background: "#f7e9e4", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <span style={{ fontSize: 13, color: "#7a4034", fontWeight: 600 }}>
+            You've blocked {peer.name}. They can't message, call, or send you files until you unblock them.
+          </span>
+          <button
+            onClick={async () => {
+              await api.unblockPeer(peer.peer_id).catch(() => {});
+              setBlockVersion((v) => v + 1);
+            }}
+            style={{ padding: "7px 13px", borderRadius: 10, background: "#fff8f2", border: "1px solid #efd7cf", color: "#7a4034", fontSize: 12.5, fontWeight: 700, flexShrink: 0 }}
+          >
+            Unblock
+          </button>
+        </div>
+      )}
 
       {searchOpen && (
         <div style={{ flex: "0 0 auto", padding: "10px 20px", borderBottom: "1px solid var(--divider)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 10 }}>
@@ -316,6 +345,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
                   onDelete={(everyone) => handleDeleteMessage(item.data, everyone)}
                   forwardCandidates={forwardCandidates}
                   onForward={(target) => handleForwardMessage(item.data, target)}
+                  theme={chatTheme}
                 />
               ) : (
                 <FileBubble
@@ -395,7 +425,8 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
         )}
         <button
           onClick={() => (hasNativePicker ? setAttachMenuOpen((v) => !v) : setFilePickerOpen((v) => !v))}
-          style={{ width: 38, height: 38, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "var(--text-muted)" }}
+          disabled={isBlocked}
+          style={{ width: 38, height: 38, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "var(--text-muted)", opacity: isBlocked ? 0.5 : 1 }}
         >
           +
         </button>
@@ -405,13 +436,14 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
           onKeyDown={(e) => {
             if (e.key === "Enter") handleSend();
           }}
-          placeholder={`Message ${peer.name}, or drop a file anywhere in this window`}
-          style={{ flex: 1, height: 42, borderRadius: 14, border: "1px solid var(--border)", padding: "0 15px", fontSize: 14 }}
+          disabled={isBlocked}
+          placeholder={isBlocked ? `You've blocked ${peer.name}` : `Message ${peer.name}, or drop a file anywhere in this window`}
+          style={{ flex: 1, height: 42, borderRadius: 14, border: "1px solid var(--border)", padding: "0 15px", fontSize: 14, opacity: isBlocked ? 0.6 : 1 }}
         />
         <button
           onClick={handleSend}
-          disabled={!draft.trim()}
-          style={{ padding: "0 18px", height: 42, borderRadius: 14, border: "none", background: draft.trim() ? "var(--accent)" : "var(--border)", color: draft.trim() ? "#fff8f2" : "var(--text-3)", fontWeight: 600, fontSize: 14 }}
+          disabled={!draft.trim() || isBlocked}
+          style={{ padding: "0 18px", height: 42, borderRadius: 14, border: "none", background: draft.trim() && !isBlocked ? "var(--accent)" : "var(--border)", color: draft.trim() && !isBlocked ? "#fff8f2" : "var(--text-3)", fontWeight: 600, fontSize: 14 }}
         >
           Send
         </button>
@@ -443,7 +475,7 @@ const pillButtonStyle = {
   color: "var(--text-strong)",
 };
 
-function MessageBubble({ msg, onRetry, onDelete, forwardCandidates, onForward }) {
+function MessageBubble({ msg, onRetry, onDelete, forwardCandidates, onForward, theme }) {
   const sent = msg.direction === "sent";
   const failed = msg.status === "failed";
   // Messages fresh off a live WS event, or an optimistic just-sent bubble,
@@ -466,9 +498,9 @@ function MessageBubble({ msg, onRetry, onDelete, forwardCandidates, onForward })
           style={{
             padding: "11px 15px",
             borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
-            background: sent ? "var(--accent)" : "var(--surface)",
+            background: sent ? theme.bg : "var(--surface)",
             border: sent ? "none" : "1px solid var(--border-soft)",
-            color: sent ? "#fff8f2" : "var(--text)",
+            color: sent ? theme.text : "var(--text)",
             fontSize: 14.5,
             lineHeight: 1.45,
             wordBreak: "break-word",
