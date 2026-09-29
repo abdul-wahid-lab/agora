@@ -218,7 +218,23 @@ class FileTransferService:
             await self.store.update_file_status(transfer_id, "failed")
             raise ConnectionError(f"peer {peer_id} not reachable")
 
-        response = await offer_future
+        try:
+            # A generous safety-net timeout, not a UX-facing "offer expired"
+            # countdown - a real human can take as long as they want to
+            # accept/decline, this exists only to catch the case where the
+            # peer's own connection gets torn down between "hello" and this
+            # offer actually being processed on their side (found via
+            # testing blocking: send_control() above can report success
+            # because the bytes reached the OS socket buffer, even though
+            # the receiving end already closed the connection right after
+            # "hello" and never got to read this frame at all - with no
+            # timeout, offer_future would then wait forever for a response
+            # that was never going to come).
+            response = await asyncio.wait_for(offer_future, timeout=60)
+        except asyncio.TimeoutError:
+            self._offer_waiters.pop(transfer_id, None)
+            await self.store.update_file_status(transfer_id, "failed")
+            raise ConnectionError(f"peer {peer_id} never responded to the file offer")
         if not response.get("accept"):
             await self.store.update_file_status(transfer_id, "declined")
             return transfer_id

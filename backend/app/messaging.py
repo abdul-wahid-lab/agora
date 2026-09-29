@@ -95,12 +95,23 @@ class MessagingService:
                 mtype = msg.get("type")
                 if mtype == "hello":
                     remote_peer_id = msg["peer_id"]
-                elif mtype == "chat" and remote_peer_id:
+                # Checked on every frame, not just "hello" - a peer already
+                # mid-connection when the block happens must not keep riding
+                # that already-open socket. Every peer-to-peer channel (chat,
+                # files, calls, group traffic) rides this same connection,
+                # so refusing it right here is the one real choke point that
+                # actually blocks all of them at once, not just whichever
+                # message type happened to get a check added to its own
+                # handler.
+                if remote_peer_id and await self.store.is_peer_blocked(remote_peer_id):
+                    await ws.close()
+                    return
+                if mtype == "chat" and remote_peer_id:
                     await self._on_chat_received(remote_peer_id, msg)
                     await ws.send(json.dumps({"type": "ack", "msg_id": msg["msg_id"]}))
                 elif mtype == "ack":
                     await self.store.update_status(msg["msg_id"], "delivered")
-                elif remote_peer_id:
+                elif mtype != "hello" and remote_peer_id:
                     await self._dispatch_control(mtype, remote_peer_id, msg)
         except websockets.ConnectionClosed:
             pass
@@ -115,6 +126,13 @@ class MessagingService:
     # -- outbound (client side) -------------------------------------------
 
     async def _get_connection(self, peer_id: str):
+        # Blocking is bidirectional: unblock first if you actually want to
+        # reach someone again. Checked before the cached-connection lookup
+        # too, so an existing open connection from before the block can't
+        # keep being reused to send through it.
+        if await self.store.is_peer_blocked(peer_id):
+            return None
+
         async with self._lock:
             conn = self._out_conns.get(peer_id)
             if conn is not None:

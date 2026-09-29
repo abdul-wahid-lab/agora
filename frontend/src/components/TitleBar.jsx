@@ -2,8 +2,20 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { paletteAt, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
 import { isPeerMuted, setPeerMuted } from "../lib/mute";
+import { useIsPeerBlocked } from "../hooks/useIsPeerBlocked";
 import DropdownMenu from "./DropdownMenu";
-import { SendFileModal, ContactsModal, DeviceInfoModal, KnownPeersModal, DiagnosticsModal, ShortcutsModal, ModalOverlay } from "./TitleBarModals";
+import {
+  SendFileModal,
+  ContactsModal,
+  DeviceInfoModal,
+  KnownPeersModal,
+  DiagnosticsModal,
+  ShortcutsModal,
+  ModalOverlay,
+  MediaLinksDocsModal,
+  DisappearingMessagesModal,
+  ChatThemeModal,
+} from "./TitleBarModals";
 
 function WindowControls({ electron }) {
   const [hover, setHover] = useState(null);
@@ -87,6 +99,8 @@ export default function TitleBar({
   const [muteVersion, setMuteVersion] = useState(0);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [updateStatus, setUpdateStatus] = useState("");
+  const [blockVersion, setBlockVersion] = useState(0);
+  const isPeerBlocked = useIsPeerBlocked(selectedPeer?.peer_id, blockVersion);
 
   useEffect(() => {
     electron?.getAlwaysOnTop?.().then((v) => setAlwaysOnTop(Boolean(v)));
@@ -132,6 +146,20 @@ export default function TitleBar({
     if (!selectedPeer) return;
     setPeerMuted(selectedPeer.peer_id, !peerMuted);
     setMuteVersion((v) => v + 1);
+  }
+
+  // The real enforcement lives entirely in messaging.py (the one choke
+  // point every peer-to-peer channel rides through) - this just records the
+  // decision and refreshes the menu's own checked state.
+  async function handleToggleBlock() {
+    if (!selectedPeer) return;
+    if (isPeerBlocked) {
+      await api.unblockPeer(selectedPeer.peer_id).catch(() => {});
+    } else {
+      if (!window.confirm(`Block ${selectedPeer.name}? They won't be able to message, call, or send you files until you unblock them.`)) return;
+      await api.blockPeer(selectedPeer.peer_id, selectedPeer.name).catch(() => {});
+    }
+    setBlockVersion((v) => v + 1);
   }
 
   async function handleToggleAlwaysOnTop() {
@@ -205,7 +233,32 @@ export default function TitleBar({
       disabledReason: isGroup ? "Calls aren't tracked per group" : "No conversation open",
     },
     "divider",
-    { label: "Block Peer", disabled: true, disabledReason: "Not built yet - queued for later, see TASK_QUEUE.md" },
+    {
+      label: "Media, Links, and Docs",
+      onClick: () => setModal("mediaLinksDocs"),
+      disabled: !selectedPeer,
+      disabledReason: isGroup ? "Not available for groups yet" : "No conversation open",
+    },
+    {
+      label: "Disappearing Messages...",
+      onClick: () => setModal("disappearing"),
+      disabled: !selectedPeer,
+      disabledReason: isGroup ? "Not available for groups yet" : "No conversation open",
+    },
+    {
+      label: "Chat Theme...",
+      onClick: () => setModal("chatTheme"),
+      disabled: !selectedPeer,
+      disabledReason: isGroup ? "Not available for groups yet" : "No conversation open",
+    },
+    "divider",
+    {
+      label: isPeerBlocked ? "Unblock Peer" : "Block Peer",
+      onClick: handleToggleBlock,
+      danger: !isPeerBlocked,
+      disabled: !selectedPeer,
+      disabledReason: isGroup ? "Block an individual member instead of a whole group" : "No conversation open",
+    },
   ];
 
   const networkItems = [
@@ -270,6 +323,9 @@ export default function TitleBar({
       {modal === "knownPeers" && <KnownPeersModal knownPeers={knownPeersData} onClose={() => setModal(null)} />}
       {modal === "diagnostics" && <DiagnosticsModal peers={peers} onClose={() => setModal(null)} />}
       {modal === "shortcuts" && <ShortcutsModal onClose={() => setModal(null)} />}
+      {modal === "mediaLinksDocs" && selectedPeer && <MediaLinksDocsModal peerId={selectedPeer.peer_id} peerName={selectedPeer.name} onClose={() => setModal(null)} />}
+      {modal === "disappearing" && selectedPeer && <DisappearingMessagesModal peerId={selectedPeer.peer_id} peerName={selectedPeer.name} onClose={() => setModal(null)} />}
+      {modal === "chatTheme" && selectedPeer && <ChatThemeModal peerId={selectedPeer.peer_id} onClose={() => setModal(null)} />}
       {modal === "updates" && (
         <ModalOverlay title="Check for Updates" onClose={() => setModal(null)} width={380}>
           <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>{updateStatus}</div>

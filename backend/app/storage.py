@@ -53,6 +53,18 @@ CREATE TABLE IF NOT EXISTS known_peers (
     last_seen REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS blocked_peers (
+    peer_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    blocked_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS disappearing_settings (
+    peer_id TEXT PRIMARY KEY,
+    duration_seconds INTEGER NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS calls (
     call_id TEXT PRIMARY KEY,
     peer_id TEXT NOT NULL,
@@ -395,6 +407,87 @@ class MessageStore:
         def _op(conn: sqlite3.Connection) -> list[dict]:
             rows = conn.execute("SELECT peer_id, name, last_seen FROM known_peers ORDER BY last_seen DESC").fetchall()
             return [{"peer_id": r[0], "name": r[1], "last_seen": r[2]} for r in rows]
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def block_peer(self, peer_id: str, name: str, ts: Optional[float] = None) -> None:
+        ts = ts if ts is not None else time.time()
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute("INSERT OR REPLACE INTO blocked_peers (peer_id, name, blocked_at) VALUES (?, ?, ?)", (peer_id, name, ts))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def unblock_peer(self, peer_id: str) -> None:
+        def _op(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM blocked_peers WHERE peer_id = ?", (peer_id,))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def is_peer_blocked(self, peer_id: str) -> bool:
+        """Checked at the single real choke point every peer-to-peer channel
+        rides through - see messaging.py's _handle_inbound/_get_connection -
+        so a block actually refuses messages, calls, files, and group
+        traffic all at once, not just one of them."""
+
+        def _op(conn: sqlite3.Connection) -> bool:
+            row = conn.execute("SELECT 1 FROM blocked_peers WHERE peer_id = ?", (peer_id,)).fetchone()
+            return row is not None
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def list_blocked_peers(self) -> list[dict]:
+        def _op(conn: sqlite3.Connection) -> list[dict]:
+            rows = conn.execute("SELECT peer_id, name, blocked_at FROM blocked_peers ORDER BY blocked_at DESC").fetchall()
+            return [{"peer_id": r[0], "name": r[1], "blocked_at": r[2]} for r in rows]
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def set_disappearing_duration(self, peer_id: str, seconds: Optional[int]) -> None:
+        """seconds=None turns disappearing messages off for this peer
+        (removes the row entirely, rather than storing a 0/null sentinel)."""
+
+        def _op(conn: sqlite3.Connection):
+            if seconds is None:
+                conn.execute("DELETE FROM disappearing_settings WHERE peer_id = ?", (peer_id,))
+            else:
+                conn.execute(
+                    "INSERT OR REPLACE INTO disappearing_settings (peer_id, duration_seconds, updated_at) VALUES (?, ?, ?)",
+                    (peer_id, seconds, time.time()),
+                )
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
+
+    async def get_disappearing_duration(self, peer_id: str) -> Optional[int]:
+        def _op(conn: sqlite3.Connection) -> Optional[int]:
+            row = conn.execute("SELECT duration_seconds FROM disappearing_settings WHERE peer_id = ?", (peer_id,)).fetchone()
+            return row[0] if row else None
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def list_disappearing_settings(self) -> list[dict]:
+        """Backs the periodic sweep loop - every peer with an active setting,
+        checked on a timer rather than scheduling a one-off task per message
+        (simpler, and self-correcting if the app was closed for a while)."""
+
+        def _op(conn: sqlite3.Connection) -> list[dict]:
+            rows = conn.execute("SELECT peer_id, duration_seconds FROM disappearing_settings").fetchall()
+            return [{"peer_id": r[0], "duration_seconds": r[1]} for r in rows]
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def delete_expired_messages(self, peer_id: str, older_than_ts: float) -> int:
+        """Deletes this device's own copy of anything in this conversation
+        older than the cutoff - local-only, see disappearing.py's own
+        docstring for why this doesn't try to tell the peer to do the same."""
+
+        def _op(conn: sqlite3.Connection) -> int:
+            cur = conn.execute("DELETE FROM messages WHERE peer_id = ? AND ts < ?", (peer_id, older_than_ts))
+            conn.commit()
+            return cur.rowcount
 
         return await asyncio.to_thread(self._run, _op)
 
