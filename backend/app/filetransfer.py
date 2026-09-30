@@ -16,8 +16,15 @@ Wire protocol (control messages, JSON, over the existing WebSocket):
     file_failed         {transfer_id, reason}
 
 Data channel (raw TCP, listener opened by the receiver on accept, sender
-connects to it): just the file bytes, starting at whatever byte offset
-the receiver asked to resume from.
+connects to it): each chunk is encrypted with the same per-peer shared key
+messaging.py derives (see crypto_identity.py), framed as a 4-byte
+big-endian length prefix followed by that many encrypted bytes, starting
+at whatever byte offset the receiver asked to resume from. This isn't just
+confidentiality: this raw socket has no identity check of its own (whoever
+connects to the ephemeral listener port gets read), so the AEAD auth tag
+on every chunk is what actually stops a third party on the LAN from
+injecting bytes into a transfer they were never part of - without the
+right shared key, nothing they send will ever decrypt.
 
 Nothing here auto-saves or auto-opens anything. A file only starts
 transferring after accept() is called (a human decision), and an
@@ -30,17 +37,20 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import struct
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from app import crypto_identity
 from app.discovery import PeerDiscovery
 from app.messaging import MessagingService
 from app.storage import FileRecord, MessageStore
 
 CHUNK_SIZE = 256 * 1024
+LENGTH_PREFIX = struct.Struct(">I")  # 4-byte big-endian length of the encrypted blob that follows
 EXECUTABLE_EXTS = {".apk", ".exe", ".msi", ".bat", ".cmd", ".com", ".sh", ".jar", ".appimage", ".ps1"}
 
 # Bandwidth-sharing throttle (see _stream_to_peer's is_call_active branch).
@@ -248,8 +258,13 @@ class FileTransferService:
         self._result_waiters[transfer_id] = result_future
         await self.store.update_file_status(transfer_id, "transferring")
 
+        shared_key = await self.messaging.get_shared_key(peer_id)
+        if shared_key is None:
+            await self.store.update_file_status(transfer_id, "failed")
+            raise ConnectionError(f"peer {peer_id}'s key isn't resolved - can't encrypt this transfer")
+
         try:
-            await self._stream_to_peer(peer.address, response["port"], path, response.get("resume_at", 0), transfer_id, size)
+            await self._stream_to_peer(peer.address, response["port"], path, response.get("resume_at", 0), transfer_id, size, shared_key)
         except OSError:
             # Dropped mid-stream (WiFi hiccup, peer closed). Leave it
             # 'offered' rather than 'failed' - resend() picks up from here.
@@ -261,7 +276,7 @@ class FileTransferService:
         await self.store.update_file_status(transfer_id, result["status"])
         return transfer_id
 
-    async def _stream_to_peer(self, host: str, port: int, file_path: str, resume_at: int, transfer_id: str, total_size: int) -> None:
+    async def _stream_to_peer(self, host: str, port: int, file_path: str, resume_at: int, transfer_id: str, total_size: int, shared_key: bytes) -> None:
         _, writer = await asyncio.open_connection(host, port)
         try:
             with open(file_path, "rb") as f:
@@ -271,8 +286,10 @@ class FileTransferService:
                     chunk = f.read(CHUNK_SIZE)
                     if not chunk:
                         break
+                    blob = crypto_identity.encrypt(shared_key, chunk)
                     write_start = time.monotonic()
-                    writer.write(chunk)
+                    writer.write(LENGTH_PREFIX.pack(len(blob)))
+                    writer.write(blob)
                     await writer.drain()
                     write_elapsed = time.monotonic() - write_start
                     sent += len(chunk)
@@ -337,8 +354,13 @@ class FileTransferService:
         part_path = self.incoming_dir / f"{transfer_id}.part"
         resume_at = part_path.stat().st_size if part_path.exists() else 0
 
+        shared_key = await self.messaging.get_shared_key(record.peer_id)
+        if shared_key is None:
+            await self.store.update_file_status(transfer_id, "failed")
+            raise ConnectionError(f"peer {record.peer_id}'s key isn't resolved - can't decrypt this transfer")
+
         async def _on_client(reader, writer):
-            await self._receive(reader, writer, transfer_id, record, part_path, resume_at)
+            await self._receive(reader, writer, transfer_id, record, part_path, resume_at, shared_key)
 
         server = await asyncio.start_server(_on_client, "0.0.0.0", 0)
         self._listeners[transfer_id] = server
@@ -350,16 +372,34 @@ class FileTransferService:
             {"type": "file_offer_response", "transfer_id": transfer_id, "accept": True, "port": port, "resume_at": resume_at},
         )
 
-    async def _receive(self, reader, writer, transfer_id: str, record: FileRecord, part_path: Path, resume_at: int) -> None:
+    async def _receive(self, reader, writer, transfer_id: str, record: FileRecord, part_path: Path, resume_at: int, shared_key: bytes) -> None:
         server = self._listeners.pop(transfer_id, None)
         try:
             mode = "ab" if resume_at else "wb"
             received = resume_at
             with open(part_path, mode) as f:
                 while True:
-                    chunk = await reader.read(CHUNK_SIZE)
-                    if not chunk:
+                    try:
+                        prefix = await reader.readexactly(LENGTH_PREFIX.size)
+                        (blob_len,) = LENGTH_PREFIX.unpack(prefix)
+                        blob = await reader.readexactly(blob_len)
+                    except asyncio.IncompleteReadError:
+                        # Clean end of stream (sender finished, or the
+                        # connection dropped mid-chunk) - either way, the
+                        # size check right below already tells the caller
+                        # whether the whole file actually arrived.
                         break
+                    try:
+                        chunk = crypto_identity.decrypt(shared_key, blob)
+                    except crypto_identity.DecryptionError:
+                        # A third party connected to this listener without
+                        # the real shared key, or the stream desynced -
+                        # either way, nothing after this can be trusted.
+                        part_path.unlink(missing_ok=True)
+                        await self.store.update_file_status(transfer_id, "failed")
+                        if self.on_received:
+                            self.on_received(transfer_id, "failed", None)
+                        return
                     f.write(chunk)
                     received += len(chunk)
                     if self.on_progress:

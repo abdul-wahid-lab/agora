@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS known_peers (
     peer_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     last_seen REAL NOT NULL
+    -- public_key added via migration below, same reason group_id was:
+    -- an already-existing known_peers table predates this column.
+);
+
+CREATE TABLE IF NOT EXISTS device_identity (
+    id INTEGER PRIMARY KEY CHECK (id = 1),  -- exactly one row, ever
+    private_key TEXT NOT NULL,
+    public_key TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS blocked_peers (
@@ -224,6 +232,10 @@ class MessageStore:
             conn.execute("ALTER TABLE files ADD COLUMN group_id TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_group ON files(group_id, ts)")
 
+        known_peers_columns = {row[1] for row in conn.execute("PRAGMA table_info(known_peers)").fetchall()}
+        if "public_key" not in known_peers_columns:
+            conn.execute("ALTER TABLE known_peers ADD COLUMN public_key TEXT")
+
     def _run(self, fn):
         conn = sqlite3.connect(self.db_path)
         try:
@@ -386,17 +398,78 @@ class MessageStore:
         discovery.py's registry is purely in-memory and forgets a peer the
         moment it drops off the network, which would otherwise mean a
         conversation's name reverting to "Unknown" as soon as the other
-        person closes their laptop."""
+        person closes their laptop.
+
+        Deliberately an UPSERT that leaves public_key untouched, not an
+        INSERT OR REPLACE - this is also called from the contacts-import
+        flow, which only ever has a peer_id/name/last_seen to offer, and a
+        blind REPLACE would silently null out a real trust-on-first-use key
+        already recorded for that peer_id by check_and_remember_peer_key."""
         ts = ts if ts is not None else time.time()
 
         def _op(conn: sqlite3.Connection):
             conn.execute(
-                "INSERT OR REPLACE INTO known_peers (peer_id, name, last_seen) VALUES (?, ?, ?)",
+                """
+                INSERT INTO known_peers (peer_id, name, last_seen) VALUES (?, ?, ?)
+                ON CONFLICT(peer_id) DO UPDATE SET name = excluded.name, last_seen = excluded.last_seen
+                """,
                 (peer_id, name, ts),
             )
             conn.commit()
 
         await asyncio.to_thread(self._run, _op)
+
+    def get_or_create_device_keys(self) -> dict:
+        """This device's own X25519 keypair - generated once, on first ever
+        run, and reused forever after (a fresh keypair every restart would
+        make every peer's trust-on-first-use record look like an identity
+        change on every launch). Deliberately synchronous, not wrapped in
+        asyncio.to_thread like the rest of this class: called once at
+        module-load time in api.py, before the event loop exists, the same
+        way NAME/PORT/PEER_ID are already resolved there."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute("SELECT private_key, public_key FROM device_identity WHERE id = 1").fetchone()
+            if row:
+                return {"private_key": row[0], "public_key": row[1]}
+            from app.crypto_identity import generate_keypair
+
+            private_key, public_key = generate_keypair()
+            conn.execute(
+                "INSERT INTO device_identity (id, private_key, public_key) VALUES (1, ?, ?)",
+                (private_key, public_key),
+            )
+            conn.commit()
+            return {"private_key": private_key, "public_key": public_key}
+        finally:
+            conn.close()
+
+    async def check_and_remember_peer_key(self, peer_id: str, name: str, public_key: str, ts: Optional[float] = None) -> Optional[str]:
+        """Trust-on-first-use. The first time this peer_id is ever seen (or
+        whenever it matches what's already on file), its key is (re)recorded
+        and this returns None - nothing to warn about. If a *different* key
+        shows up for a peer_id we've already recorded one for, that's a real
+        red flag (someone else now claiming this identity, or a genuine
+        reinstall) - this returns the OLD key so the caller can surface a
+        real warning instead of silently trusting or silently blocking it."""
+        ts = ts if ts is not None else time.time()
+
+        def _op(conn: sqlite3.Connection) -> Optional[str]:
+            row = conn.execute("SELECT public_key FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone()
+            old_key = row[0] if row else None
+            conn.execute(
+                """
+                INSERT INTO known_peers (peer_id, name, last_seen, public_key) VALUES (?, ?, ?, ?)
+                ON CONFLICT(peer_id) DO UPDATE SET name = excluded.name, last_seen = excluded.last_seen, public_key = excluded.public_key
+                """,
+                (peer_id, name, ts, public_key),
+            )
+            conn.commit()
+            if old_key is not None and old_key != public_key:
+                return old_key
+            return None
+
+        return await asyncio.to_thread(self._run, _op)
 
     async def list_known_peers(self) -> list[dict]:
         """Every peer this device has ever exchanged a hello with, regardless

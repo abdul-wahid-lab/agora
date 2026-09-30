@@ -35,6 +35,14 @@ class Peer:
     port: int
     source: str  # "mdns" or "udp"
     last_seen: float = field(default_factory=time.time)
+    # This peer's X25519 public key (base64), broadcast openly alongside
+    # peer_id/name - see crypto_identity.py for why that's fine (it's
+    # public by design). Empty string means not yet resolved (a fresh
+    # sighting whose full record hasn't arrived, or - in principle - a
+    # peer running old code without this field at all); messaging.py
+    # treats that as "can't encrypt to this peer yet" rather than ever
+    # falling back to sending anything unencrypted.
+    public_key: str = ""
 
     def is_expired(self, now: Optional[float] = None) -> bool:
         return (now or time.time()) - self.last_seen > PEER_TTL_SEC
@@ -110,6 +118,7 @@ class _MdnsListener(ServiceListener):
                 address=address,
                 port=info.port or 0,
                 source="mdns",
+                public_key=props.get("public_key", ""),
             )
         )
 
@@ -117,10 +126,12 @@ class _MdnsListener(ServiceListener):
 class PeerDiscovery:
     """Announces this device and browses for others, on mDNS and UDP broadcast."""
 
-    def __init__(self, device_name: str, service_port: int, peer_id: Optional[str] = None):
+    def __init__(self, device_name: str, service_port: int, peer_id: Optional[str] = None, public_key: str = ""):
         self.device_name = device_name
         self.service_port = service_port
         self.peer_id = peer_id or str(uuid.uuid4())
+        # Broadcast openly alongside peer_id/name - see crypto_identity.py.
+        self.public_key = public_key
         self.registry = PeerRegistry()
 
         self._zc: Optional[Zeroconf] = None
@@ -165,7 +176,7 @@ class PeerDiscovery:
             f"{self.peer_id}.{SERVICE_TYPE}",
             addresses=[socket.inet_aton(local_ip)],
             port=self.service_port,
-            properties={"peer_id": self.peer_id, "device_name": self.device_name},
+            properties={"peer_id": self.peer_id, "device_name": self.device_name, "public_key": self.public_key},
         )
         self._zc.register_service(self._service_info)
         listener = _MdnsListener(self.registry, self.peer_id)
@@ -198,6 +209,7 @@ class PeerDiscovery:
                 "device_name": self.device_name,
                 "address": local_ip,
                 "port": self.service_port,
+                "public_key": self.public_key,
             }
         ).encode()
         while not self._stop_event.is_set():
@@ -227,6 +239,7 @@ class PeerDiscovery:
                         address=msg["address"],
                         port=msg["port"],
                         source="udp",
+                        public_key=msg.get("public_key", ""),
                     )
                 )
             except (KeyError, ValueError, UnicodeDecodeError):

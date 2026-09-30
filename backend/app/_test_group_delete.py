@@ -51,12 +51,12 @@ async def main() -> None:
     print(f"scratch dir: {tmp}")
 
     alice_id, bob_id, carol_id = "alice-grpdel-test", "bob-grpdel-test", "carol-grpdel-test"
-    alice_disc = PeerDiscovery(device_name="Alice", service_port=8801, peer_id=alice_id)
-    bob_disc = PeerDiscovery(device_name="Bob", service_port=8802, peer_id=bob_id)
-    carol_disc = PeerDiscovery(device_name="Carol", service_port=8803, peer_id=carol_id)
     alice_store = MessageStore(str(tmp / "alice.db"))
     bob_store = MessageStore(str(tmp / "bob.db"))
     carol_store = MessageStore(str(tmp / "carol.db"))
+    alice_disc = PeerDiscovery(device_name="Alice", service_port=8801, peer_id=alice_id, public_key=alice_store.get_or_create_device_keys()["public_key"])
+    bob_disc = PeerDiscovery(device_name="Bob", service_port=8802, peer_id=bob_id, public_key=bob_store.get_or_create_device_keys()["public_key"])
+    carol_disc = PeerDiscovery(device_name="Carol", service_port=8803, peer_id=carol_id, public_key=carol_store.get_or_create_device_keys()["public_key"])
     alice_msg = MessagingService(alice_disc, alice_store)
     bob_msg = MessagingService(bob_disc, bob_store)
     carol_msg = MessagingService(carol_disc, carol_store)

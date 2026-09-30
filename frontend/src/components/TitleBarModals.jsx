@@ -127,6 +127,12 @@ export function DeviceInfoModal({ me, avatar, onClose }) {
       <Row label="Name" value={me?.device_name || "-"} />
       <Row label="Peer ID" value={me?.peer_id || "-"} mono />
       <Row label="Avatar color" value={<span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}><span style={{ width: 14, height: 14, borderRadius: 99, background: avatar?.bg, display: "inline-block" }} />{avatar?.bg}</span>} />
+      <Row label="Encryption key" value={me?.public_key ? `${me.public_key.slice(0, 20)}...` : "-"} mono />
+      <p style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 10, lineHeight: 1.5 }}>
+        Every message, file, and call signal to a peer is encrypted end-to-end with a key derived from this device's own key and that peer's -
+        this is the real key, not a placeholder. There's no way to look up someone else's full key from here today, so it isn't yet possible to
+        compare it out-of-band with a peer to manually verify their identity.
+      </p>
     </ModalOverlay>
   );
 }

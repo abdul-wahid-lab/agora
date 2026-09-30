@@ -549,44 +549,78 @@ to what's actually still missing:
   ever made) - all pre-existing backend tests re-verified green after this
   change too.
 
-## Known security gaps (documented since Step 7, not yet addressed)
+## Known security gaps (documented since Step 7, fixed 2026-09-30)
 
-- [ ] **No transport encryption. Real design work, not a small patch.**
-  Messages, files, and call signaling (SDP/ICE) all travel as plain
-  `ws://`/TCP between peers on the LAN: anyone else on the same network who's
-  actively sniffing can read it. (Note: this does NOT include actual call
-  audio/video, since WebRTC's media path is always DTLS-SRTP encrypted by
-  the browser/Electron itself, with no way to turn that off. The gap is
-  specifically the messaging WebSocket, the file-transfer TCP connection,
-  and the pre-media signaling.)
+- [x] **Transport encryption and cryptographic peer identity** (fixed
+  2026-09-30, real design work: new `crypto_identity.py`). Built exactly
+  the SSH/Signal-style approach this entry originally scoped, since there's
+  no central server here to issue TLS certificates from:
+  1. Each device generates its own X25519 keypair on first run
+     (`storage.get_or_create_device_keys`, a new `device_identity` table),
+     kept local forever, completely separate from `identity.json`'s
+     peer_id.
+  2. Public keys are broadcast openly alongside peer_id/device_name over
+     the *existing* discovery channel (mDNS TXT records + UDP broadcast
+     payload) rather than adding a new handshake round-trip - both sides
+     already learn each other's public key the same way they already learn
+     each other's name.
+  3. Any two peers derive the identical shared secret independently via
+     X25519 + HKDF-SHA256 (`messaging.get_shared_key`), and every real
+     frame after "hello" (chat, ack, and every control-channel message
+     file transfer/calling/groups/deletion already send via
+     `send_control`) is encrypted with ChaCha20-Poly1305 - authenticated,
+     not just confidential, so a tampered frame is detected and dropped,
+     not silently accepted. "hello" itself stays plaintext (it carries no
+     secret - just an identity announcement already broadcast openly by
+     discovery anyway).
+  4. Trust-on-first-use, exactly as scoped: `known_peers` gained a
+     `public_key` column, and `check_and_remember_peer_key` records a
+     peer's key the first time it's seen. A *different* key for an
+     already-known peer_id fires a real `peer_identity_changed` event,
+     surfaced as a dismissible app-wide banner
+     (`IdentityWarningBanner.jsx`) rather than silently trusted or
+     silently blocked - the app doesn't decide for you whether it's a
+     genuine reinstall or someone else claiming that identity.
+  5. The file-transfer TCP data channel (a separate raw socket from the
+     messaging WebSocket) got the same treatment separately, exactly as
+     scoped: each chunk is encrypted with the same per-peer shared key,
+     length-prefixed so the receiver can read exact encrypted blobs. This
+     also closes a real pre-existing gap beyond confidentiality: that
+     socket had no identity check of its own (whoever connected to the
+     ephemeral listener port got to stream bytes in), so the AEAD auth tag
+     is what actually stops a third party from injecting bytes into
+     someone else's transfer.
 
-  There's no central server here to issue TLS certificates from, so plain
-  HTTPS-style TLS doesn't map cleanly onto this app. The approach that fits
-  a peer-to-peer, no-authority design is closer to how SSH/Signal handle it:
-  1. Each device generates its own public/private keypair once (e.g.
-     X25519), stored locally, separate from `identity.json`'s peer_id.
-  2. The `hello` handshake (already exchanged first thing on every new
-     connection in `messaging.py`) also exchanges public keys.
-  3. Both sides derive a shared secret from that exchange and encrypt
-     everything after the handshake with an AEAD cipher (ChaCha20-Poly1305
-     or AES-GCM), one shared secret per peer pair.
-  4. Trust-on-first-use: the first time a peer_id is ever seen, its public
-     key gets remembered (natural fit for the `known_peers` table added for
-     the name-persistence fix, just add a `public_key` column). If that same
-     peer_id ever shows up with a *different* key later, that's a real red
-     flag worth surfacing to the user (someone else claiming an ID they
-     don't own) rather than silently trusting it.
-  5. The file-transfer TCP connection needs the same treatment separately,
-     since it's a distinct socket from the messaging WebSocket.
+  README's Security posture section is updated to reflect this is real
+  and verified, not just planned.
 
-  Planned as Phase 5 work, not started. See README's Security posture
-  section for the current honest framing (don't remove that framing until
-  this is actually built and verified, not just started).
-- [ ] **No cryptographic peer identity.** `peer_id` is just a self-declared
-  UUID sent in a hello message: nothing stops another device on the LAN
-  from claiming any peer_id it wants, including impersonating someone
-  already trusted. Fine for a trusted LAN (the app's actual threat model
-  today), not fine for a hostile shared network.
+  **Tests**: a new automated suite,
+  [_test_encryption.py](backend/app/_test_encryption.py) (5 tests, real
+  localhost sockets): messages round-trip correctly through the encrypted
+  channel; the *actual bytes* handed to the socket (captured directly, not
+  assumed) do not contain the plaintext body; a deliberately tampered
+  frame is dropped rather than accepted, and the connection survives it
+  (a normal message right after still goes through); a real key change for
+  an already-known peer_id fires the identity-changed warning with the
+  correct peer_id/name; the file-transfer TCP channel is also genuinely
+  encrypted (captured chunks don't contain the plaintext file content) and
+  the received file is still byte-identical to the original. Every
+  existing suite (10 files) re-verified green with encryption now
+  mandatory - required updating every test's `PeerDiscovery` construction
+  to supply a real public key, since a peer with no resolvable key is
+  correctly treated as unreachable rather than falling back to plaintext.
+  A real, subtle bug was found and fixed along the way while writing the
+  tamper-detection test: a pre-existing benign race between `send()` and
+  the background pending-message flush loop (a message can get a harmless
+  redundant resend if a flush tick lands in the brief window before status
+  flips from "pending" to "sent") was masking the deliberately-corrupted
+  frame with a second, genuinely valid delivery - not a security bug
+  (duplicates are idempotent by msg_id), but real enough to document
+  directly in `messaging.py`. Also verified live against two actual
+  separate backend processes (not the same-process test suite): real
+  mutual discovery exchanging real distinct public keys, a real message
+  round trip, and a real file transfer (offer -> accept -> encrypted
+  chunked stream -> byte-identical received file) end to end.
 
 ## Bigger features, explicitly out of scope until backend work happens
 

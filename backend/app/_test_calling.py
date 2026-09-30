@@ -41,10 +41,10 @@ async def main() -> None:
     print(f"scratch dir: {tmp}")
 
     # peer_ids chosen so string comparison is predictable in the collision test
-    alice_disc = PeerDiscovery(device_name="Alice", service_port=8201, peer_id="a-alice-test")
-    bob_disc = PeerDiscovery(device_name="Bob", service_port=8202, peer_id="b-bob-test")
     alice_store = MessageStore(str(tmp / "alice.db"))
     bob_store = MessageStore(str(tmp / "bob.db"))
+    alice_disc = PeerDiscovery(device_name="Alice", service_port=8201, peer_id="a-alice-test", public_key=alice_store.get_or_create_device_keys()["public_key"])
+    bob_disc = PeerDiscovery(device_name="Bob", service_port=8202, peer_id="b-bob-test", public_key=bob_store.get_or_create_device_keys()["public_key"])
     alice_msg = MessagingService(alice_disc, alice_store)
     bob_msg = MessagingService(bob_disc, bob_store)
 

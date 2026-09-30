@@ -14,12 +14,14 @@ import ScanRadar from "./components/ScanRadar";
 import SettingsScreen from "./components/SettingsScreen";
 import GroupConversationPane from "./components/GroupConversationPane";
 import GroupCallOverlay from "./components/GroupCallOverlay";
+import IdentityWarningBanner from "./components/IdentityWarningBanner";
 import { api } from "./api";
 import { useCall } from "./hooks/useCall";
 import { usePeers } from "./hooks/usePeers";
 import { useConversations } from "./hooks/useConversations";
 import { useGroups } from "./hooks/useGroups";
 import { useGroupCall } from "./hooks/useGroupCall";
+import { useIdentityWarnings } from "./hooks/useIdentityWarnings";
 
 const ONBOARDING_KEY = "agora.onboarded";
 
@@ -76,6 +78,7 @@ export default function App() {
     toggleMute,
     toggleCamera,
   } = useCall();
+  const { warnings: identityWarnings, dismiss: dismissIdentityWarning } = useIdentityWarnings();
 
   async function finishOnboarding(chosenName) {
     localStorage.setItem("agora.chosenName", chosenName);
@@ -240,6 +243,8 @@ export default function App() {
         sidebarVisible={sidebarVisible}
         onToggleSidebar={() => setSidebarVisible((v) => !v)}
       />
+
+      <IdentityWarningBanner warnings={identityWarnings} onDismiss={dismissIdentityWarning} />
 
       <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
         <IconRail active={active} onSelect={handleSelectTab} selfInitial={me?.device_name?.[0]?.toUpperCase()} />

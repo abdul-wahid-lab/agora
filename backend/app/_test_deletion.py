@@ -48,10 +48,10 @@ async def main() -> None:
     tmp = Path(tempfile.mkdtemp(prefix="agora_delete_test_"))
     print(f"scratch dir: {tmp}")
 
-    alice_disc = PeerDiscovery(device_name="Alice", service_port=8401, peer_id="alice-del-test")
-    bob_disc = PeerDiscovery(device_name="Bob", service_port=8402, peer_id="bob-del-test")
     alice_store = MessageStore(str(tmp / "alice.db"))
     bob_store = MessageStore(str(tmp / "bob.db"))
+    alice_disc = PeerDiscovery(device_name="Alice", service_port=8401, peer_id="alice-del-test", public_key=alice_store.get_or_create_device_keys()["public_key"])
+    bob_disc = PeerDiscovery(device_name="Bob", service_port=8402, peer_id="bob-del-test", public_key=bob_store.get_or_create_device_keys()["public_key"])
     alice_msg = MessagingService(alice_disc, alice_store)
     bob_msg = MessagingService(bob_disc, bob_store)
 
