@@ -51,7 +51,7 @@ npm install
 npm run electron:dev
 ```
 
-That's it - Electron starts the backend for you (writing its data to a proper per-user app-data folder) and opens the real app window. `npm run electron:build` produces a Windows installer via electron-builder.
+That's it - Electron starts the backend for you (writing its data to a proper per-user app-data folder) and opens the real app window. `npm run electron:build` produces two files under `frontend/release`: `Agora Setup <version>.exe`, a normal Windows installer, and `Agora <version>.exe`, a portable build that runs directly with no installation, no admin rights, and no Start Menu entry.
 
 Prefer just the web UI in a browser tab for development? That still works:
 
