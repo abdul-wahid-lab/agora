@@ -54,10 +54,10 @@ async def main() -> None:
     test_file.write_bytes(b"\x42" * 500_000 + b"not really a jpeg, just test bytes")
     original_hash = sha256_file(str(test_file))
 
-    alice_disc = PeerDiscovery(device_name="Alice", service_port=8101, peer_id="alice-test")
-    bob_disc = PeerDiscovery(device_name="Bob", service_port=8102, peer_id="bob-test")
     alice_store = MessageStore(str(tmp / "alice.db"))
     bob_store = MessageStore(str(tmp / "bob.db"))
+    alice_disc = PeerDiscovery(device_name="Alice", service_port=8101, peer_id="alice-test", public_key=alice_store.get_or_create_device_keys()["public_key"])
+    bob_disc = PeerDiscovery(device_name="Bob", service_port=8102, peer_id="bob-test", public_key=bob_store.get_or_create_device_keys()["public_key"])
     alice_msg = MessagingService(alice_disc, alice_store)
     bob_msg = MessagingService(bob_disc, bob_store)
 
@@ -129,9 +129,9 @@ async def main() -> None:
         bytes_seen_by_sender = []
         orig_stream = alice_ft._stream_to_peer
 
-        async def spy_stream(host, port, path, resume_at, tid, total):
+        async def spy_stream(host, port, path, resume_at, tid, total, shared_key):
             bytes_seen_by_sender.append(resume_at)
-            await orig_stream(host, port, path, resume_at, tid, total)
+            await orig_stream(host, port, path, resume_at, tid, total, shared_key)
 
         alice_ft._stream_to_peer = spy_stream
 

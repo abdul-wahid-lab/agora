@@ -67,7 +67,13 @@ app.add_middleware(
 )
 
 store = MessageStore(DB_PATH)
-discovery = PeerDiscovery(device_name=NAME, service_port=PORT, peer_id=PEER_ID)
+# This device's own X25519 keypair - generated once, persisted in this same
+# db, reused for every future launch. Broadcast openly via discovery so any
+# peer can derive a shared encryption key with this device (see
+# crypto_identity.py). Resolved here, before PeerDiscovery even exists,
+# the same way NAME/PORT/PEER_ID already are above.
+_device_keys = store.get_or_create_device_keys()
+discovery = PeerDiscovery(device_name=NAME, service_port=PORT, peer_id=PEER_ID, public_key=_device_keys["public_key"])
 
 # UI clients connected to /events - pushed to as things happen, rather than
 # making the frontend poll for messages/offers/transfer status.
@@ -161,6 +167,15 @@ def _on_disappearing_swept(peer_id: str, count: int) -> None:
     asyncio.create_task(_broadcast({"type": "messages_expired", "peer_id": peer_id, "count": count}))
 
 
+def _on_identity_changed(peer_id: str, name: str) -> None:
+    # A peer_id we already had a trust-on-first-use key recorded for just
+    # showed up with a *different* key - see messaging.py's get_shared_key.
+    # Real signal worth a human's attention (someone else now claiming this
+    # identity, or a genuine reinstall on their end), so this is surfaced
+    # rather than silently accepted or silently blocked.
+    asyncio.create_task(_broadcast({"type": "peer_identity_changed", "peer_id": peer_id, "name": name}))
+
+
 def _on_group_invite(group) -> None:
     asyncio.create_task(
         _broadcast({"type": "group_invite", "group_id": group.group_id, "name": group.name, "members": [{"peer_id": m.peer_id, "name": m.name} for m in group.members]})
@@ -199,7 +214,7 @@ def _on_group_call_start(evt) -> None:
     )
 
 
-messaging = MessagingService(discovery, store, on_message=_on_message)
+messaging = MessagingService(discovery, store, on_message=_on_message, on_identity_changed=_on_identity_changed)
 file_transfer = FileTransferService(
     discovery,
     messaging,
@@ -292,7 +307,17 @@ async def shutdown() -> None:
 
 @app.get("/me")
 async def get_me():
-    return {"peer_id": discovery.peer_id, "device_name": discovery.device_name, "port": discovery.service_port}
+    return {
+        "peer_id": discovery.peer_id,
+        "device_name": discovery.device_name,
+        "port": discovery.service_port,
+        # This device's real X25519 public key - the Device Info screen
+        # shows it (as a short fingerprint) so a user can, in principle,
+        # read it aloud/compare it with a peer out-of-band. Public by
+        # design, see crypto_identity.py - there's nothing sensitive about
+        # exposing it here.
+        "public_key": discovery.public_key,
+    }
 
 
 @app.get("/peers")

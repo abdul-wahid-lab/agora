@@ -44,7 +44,7 @@ async def main() -> None:
 
     db_path = args.db or f"{args.name.lower()}.db"
     store = MessageStore(db_path)
-    discovery = PeerDiscovery(device_name=args.name, service_port=args.port, peer_id=args.peer_id)
+    discovery = PeerDiscovery(device_name=args.name, service_port=args.port, peer_id=args.peer_id, public_key=store.get_or_create_device_keys()["public_key"])
 
     def on_message(msg: IncomingMessage) -> None:
         peer = next((p for p in discovery.registry.list() if p.peer_id == msg.peer_id), None)
