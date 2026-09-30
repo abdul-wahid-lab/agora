@@ -235,6 +235,20 @@ class MessageStore:
         known_peers_columns = {row[1] for row in conn.execute("PRAGMA table_info(known_peers)").fetchall()}
         if "public_key" not in known_peers_columns:
             conn.execute("ALTER TABLE known_peers ADD COLUMN public_key TEXT")
+        if "signing_public_key" not in known_peers_columns:
+            # The pinned key for verifying discovery announcements (see
+            # crypto_identity.py's signed-broadcast section) - deliberately
+            # a separate column from public_key (the encryption key): they
+            # are different keys for different purposes, and a peer_id's
+            # encryption key can legitimately be re-derived/rotated
+            # independently of whether its signing identity has changed.
+            conn.execute("ALTER TABLE known_peers ADD COLUMN signing_public_key TEXT")
+
+        device_identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(device_identity)").fetchall()}
+        if "signing_private_key" not in device_identity_columns:
+            conn.execute("ALTER TABLE device_identity ADD COLUMN signing_private_key TEXT")
+        if "signing_public_key" not in device_identity_columns:
+            conn.execute("ALTER TABLE device_identity ADD COLUMN signing_public_key TEXT")
 
     def _run(self, fn):
         conn = sqlite3.connect(self.db_path)
@@ -420,27 +434,85 @@ class MessageStore:
         await asyncio.to_thread(self._run, _op)
 
     def get_or_create_device_keys(self) -> dict:
-        """This device's own X25519 keypair - generated once, on first ever
-        run, and reused forever after (a fresh keypair every restart would
-        make every peer's trust-on-first-use record look like an identity
-        change on every launch). Deliberately synchronous, not wrapped in
-        asyncio.to_thread like the rest of this class: called once at
-        module-load time in api.py, before the event loop exists, the same
-        way NAME/PORT/PEER_ID are already resolved there."""
+        """This device's own X25519 (encryption) and Ed25519 (discovery-
+        broadcast signing - see crypto_identity.py) keypairs - generated
+        once, on first ever run, and reused forever after (a fresh keypair
+        every restart would make every peer's trust-on-first-use record
+        look like an identity change on every launch). Deliberately
+        synchronous, not wrapped in asyncio.to_thread like the rest of this
+        class: called once at module-load time in api.py, before the event
+        loop exists, the same way NAME/PORT/PEER_ID are already resolved
+        there.
+
+        A device that already has an X25519 row from before signing keys
+        existed gets its signing keypair backfilled in place, once - same
+        idempotent-migration spirit as _migrate(), just data instead of
+        schema."""
+        from app.crypto_identity import generate_keypair, generate_signing_keypair
+
         conn = sqlite3.connect(self.db_path)
         try:
-            row = conn.execute("SELECT private_key, public_key FROM device_identity WHERE id = 1").fetchone()
+            row = conn.execute("SELECT private_key, public_key, signing_private_key, signing_public_key FROM device_identity WHERE id = 1").fetchone()
             if row:
-                return {"private_key": row[0], "public_key": row[1]}
-            from app.crypto_identity import generate_keypair
+                private_key, public_key, signing_private_key, signing_public_key = row
+                if not signing_private_key or not signing_public_key:
+                    signing_private_key, signing_public_key = generate_signing_keypair()
+                    conn.execute(
+                        "UPDATE device_identity SET signing_private_key = ?, signing_public_key = ? WHERE id = 1",
+                        (signing_private_key, signing_public_key),
+                    )
+                    conn.commit()
+                return {"private_key": private_key, "public_key": public_key, "signing_private_key": signing_private_key, "signing_public_key": signing_public_key}
 
             private_key, public_key = generate_keypair()
+            signing_private_key, signing_public_key = generate_signing_keypair()
             conn.execute(
-                "INSERT INTO device_identity (id, private_key, public_key) VALUES (1, ?, ?)",
-                (private_key, public_key),
+                "INSERT INTO device_identity (id, private_key, public_key, signing_private_key, signing_public_key) VALUES (1, ?, ?, ?, ?)",
+                (private_key, public_key, signing_private_key, signing_public_key),
             )
             conn.commit()
-            return {"private_key": private_key, "public_key": public_key}
+            return {"private_key": private_key, "public_key": public_key, "signing_private_key": signing_private_key, "signing_public_key": signing_public_key}
+        finally:
+            conn.close()
+
+    def check_and_pin_signing_key(self, peer_id: str, signing_public_key: str) -> bool:
+        """The real fix for the discovery-spoofing hole a real adversarial
+        test found (see _test_adversarial.py's Attack 3): called from
+        discovery.py's own listener callbacks, on every announcement,
+        *before* it's ever allowed to reach the live PeerRegistry - not
+        lazily, later, only once messaging.py happens to talk to that
+        peer_id. Returns True (accept) the first time this peer_id is ever
+        seen, or if its signing key already matches what's on file. Returns
+        False (reject - the announcement is dropped, never upserted) if a
+        *different* signing key is claiming a peer_id already pinned to
+        another one - exactly the forged-broadcast scenario that attack
+        demonstrated.
+
+        Deliberately synchronous like get_or_create_device_keys: discovery
+        callbacks run on zeroconf's own thread and the UDP listener thread,
+        neither of which has (or should need) access to the asyncio event
+        loop. Each call opens its own short-lived connection, same as
+        every other method here - safe to call from any thread."""
+        conn = sqlite3.connect(self.db_path)
+        try:
+            row = conn.execute("SELECT signing_public_key FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone()
+            pinned = row[0] if row else None
+            if pinned is not None:
+                return pinned == signing_public_key
+            # First sighting ever - pin it. known_peers may or may not
+            # already have a row for this peer_id (e.g. from a contacts
+            # import, or an earlier encryption-key sighting) - upsert
+            # rather than assume either way, same pattern as
+            # check_and_remember_peer_key.
+            conn.execute(
+                """
+                INSERT INTO known_peers (peer_id, name, last_seen, signing_public_key) VALUES (?, ?, ?, ?)
+                ON CONFLICT(peer_id) DO UPDATE SET signing_public_key = excluded.signing_public_key
+                """,
+                (peer_id, peer_id, time.time(), signing_public_key),
+            )
+            conn.commit()
+            return True
         finally:
             conn.close()
 

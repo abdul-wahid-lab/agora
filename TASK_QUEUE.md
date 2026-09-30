@@ -549,7 +549,7 @@ to what's actually still missing:
   ever made) - all pre-existing backend tests re-verified green after this
   change too.
 
-## Known security gaps (documented since Step 7, fixed 2026-09-30)
+## Known security gaps (documented since Step 7 - all fixed as of 2026-10-01)
 
 - [x] **Transport encryption and cryptographic peer identity** (fixed
   2026-09-30, real design work: new `crypto_identity.py`). Built exactly
@@ -564,13 +564,17 @@ to what's actually still missing:
      payload) rather than adding a new handshake round-trip - both sides
      already learn each other's public key the same way they already learn
      each other's name.
-  3. Any two peers derive the identical shared secret independently via
-     X25519 + HKDF-SHA256 (`messaging.get_shared_key`), and every real
-     frame after "hello" (chat, ack, and every control-channel message
-     file transfer/calling/groups/deletion already send via
-     `send_control`) is encrypted with ChaCha20-Poly1305 - authenticated,
-     not just confidential, so a tampered frame is detected and dropped,
-     not silently accepted. "hello" itself stays plaintext (it carries no
+  3. Any two peers derive the identical underlying secret independently via
+     X25519 + HKDF-SHA256, then split it into two distinct **directional**
+     keys (`messaging.get_send_key`/`get_recv_key`, backed by
+     `crypto_identity.derive_directional_keys`) - not one shared key reused
+     both ways, see the adversarial-testing addendum below for exactly why
+     that distinction is load-bearing, not cosmetic. Every real frame after
+     "hello" (chat, ack, and every control-channel message file
+     transfer/calling/groups/deletion already send via `send_control`) is
+     encrypted with ChaCha20-Poly1305 - authenticated, not just
+     confidential, so a tampered frame is detected and dropped, not
+     silently accepted. "hello" itself stays plaintext (it carries no
      secret - just an identity announcement already broadcast openly by
      discovery anyway).
   4. Trust-on-first-use, exactly as scoped: `known_peers` gained a
@@ -621,6 +625,195 @@ to what's actually still missing:
   mutual discovery exchanging real distinct public keys, a real message
   round trip, and a real file transfer (offer -> accept -> encrypted
   chunked stream -> byte-identical received file) end to end.
+
+  **Addendum, 2026-09-30 (later the same day): a genuine network-level
+  wiretap test, plus real adversarial security testing.** Requested
+  explicitly as a much deeper pass than the above - "test it in very
+  detail," then a direct request to attack it "like a hacker" with at
+  least 5 different strategies. Two real, previously-unknown
+  vulnerabilities were found and fixed as a direct result. This was not a
+  rubber-stamp - the testing itself surfaced genuine problems that the
+  functional test suite above had no way to catch, because it never tried
+  to actually attack anything.
+
+  **[_test_wiretap.py](backend/app/_test_wiretap.py)**: a real network-level
+  wiretap, not another same-process capture. Bob's real WebSocket server
+  binds to an internal port nothing outside the test ever learns; the
+  address bob *advertises* via discovery is a small, separate raw TCP
+  relay that just forwards bytes in both directions while keeping a copy
+  of every one - alice genuinely dials the relay believing it's bob,
+  exactly the vantage point a real network sniffer would have. Two wire-
+  level subtleties had to be worked through to make this rigorous rather
+  than misleading: WebSocket mandatorily masks every client-to-server
+  frame's payload with a per-frame XOR key (RFC 6455, not encryption - a
+  cache-poisoning defense), so literal wire bytes never match plaintext
+  even for a genuinely unencrypted frame; and the `websockets` library
+  negotiates permessage-deflate compression by default, so even unmasked
+  bytes are raw-deflate, not literal text. The test reassembles the real
+  TCP stream, parses actual WebSocket frames back out and unmasks them,
+  and disables compression on its own connections only (production code
+  untouched) to isolate the wire-level transform that actually matters
+  here. A positive control (confirming "hello"'s plaintext peer_id really
+  is recoverable this way) is checked alongside the real assertions, so
+  the test can't trivially pass by accident. Confirms: a real chat body, a
+  real SDP call-signaling marker, and a real file offer's filename never
+  appear anywhere in what a genuine wire observer could recover.
+
+  **[_test_adversarial.py](backend/app/_test_adversarial.py)**: five actual
+  attacks, not five more happy-path checks:
+  1. **Reflection (CONFIRMED VULNERABLE, then FIXED)** - the original
+     design used ONE shared key for both directions of a conversation.
+     Proven exploitable directly: a ciphertext alice legitimately sent to
+     bob, captured and replayed back at alice's own connection with bob's
+     peer_id, decrypted successfully and was stored as if bob had sent it.
+     Fixed with `crypto_identity.derive_directional_keys` - the same raw
+     X25519 secret is now split via HKDF into two distinct, labelled
+     sub-keys (`"A->B"` and `"B->A"`), so a blob valid in one direction can
+     never be mistaken for the other, even between the exact same two
+     devices. `messaging.py` now caches and exposes `get_send_key`/
+     `get_recv_key` per peer instead of one `get_shared_key`; every send
+     site and every decrypt site was updated to use the correct one, and
+     `filetransfer.py`'s sender/receiver paths were updated the same way.
+     Re-verified fixed both at the crypto-primitive level and end-to-end
+     (a real replay attempt against a real running connection is now
+     correctly rejected).
+  2. **Replay (same direction)** - the exact same captured ciphertext
+     resent to its real, intended recipient 5 times in a row. Harmless in
+     practice: every message type in this app is already idempotent by
+     its own id (`msg_id`-keyed `INSERT OR REPLACE`), so a duplicate just
+     overwrites itself with identical content. Documented as a real,
+     residual limitation rather than silently declared "fine": there is no
+     general anti-replay mechanism (no sequence numbers, no nonce ledger,
+     no session freshness binding) - it's incidental good luck that every
+     message type so far happens to be idempotent, not a designed
+     guarantee, and a future message type that ISN'T naturally idempotent
+     would reopen this. Not fixed now (a real sequence-number/session
+     scheme is a bigger design change than this pass's scope); flagged
+     here so it isn't forgotten.
+  3. **Discovery spoofing (CONFIRMED EXPLOITABLE - pre-existing, not new)**
+     - a single raw UDP socket, with no relationship to this app's own
+     code at all, broadcasting a forged packet claiming an existing
+     peer_id with an attacker-controlled public key. A one-shot version
+     didn't stick (the real device's own periodic re-announce won the
+     race), but a sustained flood (every 50ms, versus the real device's 3s
+     announce interval) reliably and repeatedly won the registry. This is
+     the exact gap this section's own "No cryptographic peer identity"
+     entry already named before any of this session's work started -
+     encryption doesn't close it, it just changes what "wins" the
+     exploit: a device that's never talked to a peer_id before will happily
+     encrypt everything to whichever key most recently claimed that
+     peer_id in an unauthenticated broadcast. Not fixed here (would need
+     signed discovery broadcasts, itself signed by the same long-term
+     keypair - a real, larger follow-up, not a quick patch); the
+     README's Security posture section is updated to state this
+     explicitly rather than let "peer-to-peer traffic is end-to-end
+     encrypted" read as a stronger guarantee than it actually is on a
+     hostile network.
+  4. **Malformed-frame DoS (no vulnerability found)** - empty frames, 1
+     random byte, 11 bytes (shorter than the nonce), exactly 12 bytes
+     (nonce with zero ciphertext), 64KB of garbage, and a well-formed-
+     looking-but-wrong nonce+tag, all sent at the real messaging server.
+     It survived every one and kept accepting real connections afterward -
+     confirms the existing `try/except DecryptionError: continue` +
+     length-check defensive coding in `_handle_inbound` actually holds up
+     under deliberate abuse, not just well-formed input.
+  5. **File-transfer length-prefix DoS (CONFIRMED VULNERABLE, then FIXED)**
+     - the receiver reads a 4-byte length prefix, then
+     `reader.readexactly(that_many_bytes)`, with the length entirely
+     trusted from whoever is connected. Proven exploitable directly: a
+     connection claiming a chunk length of ~4GB, followed by 500 real
+     bytes and then permanent silence, left the receive task blocked in
+     `readexactly()` indefinitely - no timeout anywhere in that path, so
+     the task, its open socket, and the transfer's listener all stayed
+     alive forever. Fixed in `filetransfer.py` with
+     `MAX_ENCRYPTED_CHUNK_LEN` (rejects any claimed length bigger than a
+     real chunk could ever legitimately be) and
+     `CHUNK_READ_TIMEOUT_SECONDS` (a generous 60s per read, the same
+     "safety net, not a UX countdown" philosophy as the existing
+     offer-response timeout). Fixing this surfaced a **second**, unrelated
+     real bug: aborting from inside the `with open(part_path, ...) as f:`
+     block and calling `part_path.unlink()` while `f` was still open threw
+     `PermissionError` on Windows (POSIX allows deleting an open file;
+     Windows does not) - this exact pattern already existed in the
+     hash-mismatch/decrypt-failure abort path too, introduced earlier the
+     same day and never exercised by a real Windows failure until this
+     test hit it. Fixed by restructuring `_receive` to set a flag and
+     `break` instead of returning from inside the `with` block, doing the
+     unlink only after the file handle is genuinely closed. Re-verified: the
+     hang is gone (rejected in ~0.2s), the task raises no exception, the
+     transfer is correctly marked `failed`, and the partial file is
+     actually cleaned up from disk.
+
+  All 13 backend test suites (the original 10, plus `_test_encryption.py`,
+  `_test_wiretap.py`, and `_test_adversarial.py`) re-verified green after
+  both fixes, run together, multiple times, to rule out flakiness in the
+  new adversarial/wiretap tests themselves.
+
+- [x] **Discovery broadcasts aren't signed - a peer_id's public key could be
+  hijacked via forged UDP packets** (found 2026-09-30, fixed 2026-10-01).
+  Found and confirmed exploitable via `_test_adversarial.py`'s Attack 3
+  while adversarially testing the transport-encryption work above (not a
+  new regression from it - the underlying gap was exactly this section's
+  original "No cryptographic peer identity" entry, just now demonstrated
+  concretely rather than only described). A raw UDP socket with no
+  relationship to this app's own code could broadcast
+  `{"peer_id": "<any existing peer_id>", "public_key": "<attacker's own
+  key>", ...}`, and `PeerRegistry.upsert` accepted it with zero
+  verification - last-packet-seen-wins, no signature, no consistency check
+  against mDNS. A one-shot forged packet lost the race to the real
+  device's own periodic re-announce, but a sustained flood (every ~50ms,
+  versus the real device's 3-second interval) reliably and repeatedly won.
+  Trust-on-first-use (already built) didn't close this: it protects a
+  peer_id you've *already* established a key for from silently changing
+  later, but did nothing for the very first sighting.
+
+  **Fixed with signed discovery broadcasts.** A second, separate Ed25519
+  signing keypair per device (`crypto_identity.generate_signing_keypair` -
+  deliberately never the same key as the X25519 encryption keypair, mixing
+  DH and signing key purposes is a real crypto engineering anti-pattern
+  regardless of whether a concrete attack exploits it), generated once and
+  persisted in the same `device_identity` table (backfilled in place for
+  any device that already had an X25519 row from before this existed).
+  Every mDNS TXT record and UDP broadcast payload now carries
+  `signing_public_key` + a real Ed25519 `signature`
+  (`crypto_identity.sign_announcement`) over the announcement's real
+  security-relevant fields (peer_id, address, port, encryption public_key
+  - deliberately NOT device_name, which is cosmetic and can legitimately
+  change). A receiver (`discovery.py`'s `_MdnsListener._handle` and
+  `_udp_listen_loop`) now verifies that signature and checks it against
+  `storage.check_and_pin_signing_key` - a new synchronous method (matching
+  `get_or_create_device_keys`'s existing sync pattern, since discovery
+  callbacks run on zeroconf's own thread and the UDP listener thread, not
+  the asyncio loop) that pins a peer_id's signing key the first time it's
+  seen and rejects any later announcement claiming that peer_id with a
+  *different* key - all of this **before** an announcement is ever allowed
+  to reach the live `PeerRegistry`, not lazily afterward the way the
+  encryption-key trust-on-first-use check in messaging.py works. An
+  unsigned announcement, an invalidly-signed one, or a validly-self-signed
+  one from a key never pinned to that peer_id before are all dropped
+  outright. This still doesn't (and structurally can't) protect the very
+  first time a peer_id is ever seen - the same boundary any
+  trust-on-first-use scheme has, SSH included - but it closes the window
+  where an *already-established* peer_id's traffic could be silently
+  redirected mid-relationship.
+
+  **Tests**: `_test_adversarial.py`'s Attack 3 was rewritten (not just
+  re-verified) to attack the *fixed* system - a completely unsigned
+  forgery, and the exact previously-successful attack technique using a
+  freshly-generated attacker signing keypair to self-sign a forged
+  announcement, both confirmed rejected; the real victim's genuine entry
+  confirmed unaffected by either attempt. All 13 backend suites (including
+  every test file's `PeerDiscovery` construction, which now needs real
+  signing keys the same way it needed a real encryption public key before)
+  re-verified green. Also verified live against two real separate backend
+  processes: real mutual discovery with real signed announcements, a real
+  message round trip, and then a genuine external Python process (no
+  relationship to the test harness) firing the exact same sustained
+  forged-UDP-flood attack at the live processes over real sockets -
+  confirmed alice's real backend kept bob's real address/key throughout,
+  completely unaffected. README's Security posture section is updated to
+  drop the "not yet independently verifiable" caveat this entry used to
+  justify.
 
 ## Bigger features, explicitly out of scope until backend work happens
 
@@ -822,6 +1015,36 @@ to what's actually still missing:
   the phone reimplements the same wire protocol natively rather than running
   the Python backend on-device. Deliberately deferred until desktop is
   fully validated on two real machines.
+- [ ] **Screen sharing during a call.** Requested 2026-10-01, not started.
+  Scoped explicitly as working from **either** an audio call or a video
+  call - not gated behind video-only, since the whole point is letting
+  someone show their screen even when the call itself started as
+  audio-only (their camera can stay off the entire time). Real work, not a
+  small addition: `useCall.js`/`useGroupCall.js` currently negotiate a
+  fixed audio/video `getUserMedia` stream per call; this needs a second,
+  independent `getDisplayMedia()` capture that can start and stop mid-call
+  without renegotiating the whole connection from scratch, plus a
+  browser/Electron permission prompt for screen capture specifically
+  (distinct from the camera/mic permission already handled in onboarding),
+  plus UI for the sharer (a "Share Screen"/"Stop Sharing" control inside
+  `CallOverlay.jsx`/`GroupCallOverlay.jsx`, a picker if more than one
+  monitor/window is available) and for the viewer (the shared screen
+  needs to become the primary video tile, distinguishable from an actual
+  webcam feed - WhatsApp/Zoom-style, not indistinguishable from a face).
+  For a group call, this also needs a real decision about mesh bandwidth
+  (Step 14/`groups.py`'s existing 4-person full-mesh cap already exists
+  because of bandwidth concerns with video alone - adding a screen share
+  stream to that same mesh needs its own look before assuming it just
+  works at the current cap).
+
+  **Explicitly linked follow-up, not in scope yet:** the user has a
+  separate existing repo with a working video-recording feature they'll
+  hand over later, specifically to bring recording into *this* screen-
+  sharing feature once it's built (i.e., record the shared screen, not
+  just a talking-head video call) - noted here so that when screen sharing
+  above gets built, its architecture should leave room for a recording
+  tap-in rather than needing a rework once that repo arrives. Nothing to
+  build from that repo until it's actually provided.
 - [x] **Block a peer** (fixed 2026-09-29). Real backend enforcement, not a
   UI-only switch: a new `blocked_peers` table in
   [storage.py](backend/app/storage.py), checked from a single real choke

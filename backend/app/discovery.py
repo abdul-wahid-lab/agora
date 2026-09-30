@@ -21,6 +21,8 @@ from typing import Callable, Optional
 
 from zeroconf import ServiceBrowser, ServiceInfo, ServiceListener, Zeroconf
 
+from app import crypto_identity
+
 SERVICE_TYPE = "_lanchat._tcp.local."
 UDP_BROADCAST_PORT = 42424
 UDP_ANNOUNCE_INTERVAL_SEC = 3.0
@@ -87,9 +89,10 @@ class PeerRegistry:
 
 
 class _MdnsListener(ServiceListener):
-    def __init__(self, registry: PeerRegistry, self_peer_id: str):
+    def __init__(self, registry: PeerRegistry, self_peer_id: str, on_verify_signing_key: Optional[Callable[[str, str], bool]] = None):
         self._registry = registry
         self._self_peer_id = self_peer_id
+        self._on_verify_signing_key = on_verify_signing_key
 
     def add_service(self, zc: Zeroconf, type_: str, name: str) -> None:
         self._handle(zc, type_, name)
@@ -111,14 +114,32 @@ class _MdnsListener(ServiceListener):
         if peer_id == self._self_peer_id:
             return
         address = socket.inet_ntoa(info.addresses[0])
+        port = info.port or 0
+        public_key = props.get("public_key", "")
+        # Signature verification (see crypto_identity.py's signed-broadcast
+        # section, and the module docstring's Phase 5b) - an announcement
+        # missing a signature, or one that doesn't verify, or one whose
+        # signing key conflicts with what's already pinned for this
+        # peer_id, is dropped outright rather than ever reaching the live
+        # registry. Not optional/best-effort: a forged mDNS/UDP packet is
+        # exactly how a real, confirmed attack redirected an established
+        # peer_id's traffic before this existed.
+        signing_public_key = props.get("signing_public_key", "")
+        signature = props.get("signature", "")
+        if not signing_public_key or not signature:
+            return
+        if not crypto_identity.verify_announcement(signing_public_key, signature, peer_id, address, port, public_key):
+            return
+        if self._on_verify_signing_key and not self._on_verify_signing_key(peer_id, signing_public_key):
+            return
         self._registry.upsert(
             Peer(
                 peer_id=peer_id,
                 name=props.get("device_name", name),
                 address=address,
-                port=info.port or 0,
+                port=port,
                 source="mdns",
-                public_key=props.get("public_key", ""),
+                public_key=public_key,
             )
         )
 
@@ -126,12 +147,31 @@ class _MdnsListener(ServiceListener):
 class PeerDiscovery:
     """Announces this device and browses for others, on mDNS and UDP broadcast."""
 
-    def __init__(self, device_name: str, service_port: int, peer_id: Optional[str] = None, public_key: str = ""):
+    def __init__(
+        self,
+        device_name: str,
+        service_port: int,
+        peer_id: Optional[str] = None,
+        public_key: str = "",
+        signing_private_key: str = "",
+        signing_public_key: str = "",
+        on_verify_signing_key: Optional[Callable[[str, str], bool]] = None,
+    ):
         self.device_name = device_name
         self.service_port = service_port
         self.peer_id = peer_id or str(uuid.uuid4())
         # Broadcast openly alongside peer_id/name - see crypto_identity.py.
         self.public_key = public_key
+        # This device's own Ed25519 signing identity, and the callback used
+        # to verify + pin *other* peers' signing keys (storage.py's
+        # check_and_pin_signing_key) - see crypto_identity.py's Phase 5b.
+        # signing_private_key empty means "don't sign outgoing announcements"
+        # (only ever used by cli_test.py's throwaway diagnostic identity,
+        # never by the real app) - but incoming verification is enforced
+        # unconditionally regardless of whether this device signs its own.
+        self.signing_private_key = signing_private_key
+        self.signing_public_key = signing_public_key
+        self._on_verify_signing_key = on_verify_signing_key
         self.registry = PeerRegistry()
 
         self._zc: Optional[Zeroconf] = None
@@ -171,15 +211,20 @@ class PeerDiscovery:
     def _start_mdns(self) -> None:
         self._zc = Zeroconf()
         local_ip = _get_local_ip()
+        properties = {"peer_id": self.peer_id, "device_name": self.device_name, "public_key": self.public_key}
+        if self.signing_private_key:
+            signature = crypto_identity.sign_announcement(self.signing_private_key, self.peer_id, local_ip, self.service_port, self.public_key)
+            properties["signing_public_key"] = self.signing_public_key
+            properties["signature"] = signature
         self._service_info = ServiceInfo(
             SERVICE_TYPE,
             f"{self.peer_id}.{SERVICE_TYPE}",
             addresses=[socket.inet_aton(local_ip)],
             port=self.service_port,
-            properties={"peer_id": self.peer_id, "device_name": self.device_name, "public_key": self.public_key},
+            properties=properties,
         )
         self._zc.register_service(self._service_info)
-        listener = _MdnsListener(self.registry, self.peer_id)
+        listener = _MdnsListener(self.registry, self.peer_id, self._on_verify_signing_key)
         self._browser = ServiceBrowser(self._zc, SERVICE_TYPE, listener)
 
     # -- UDP broadcast fallback -------------------------------------------
@@ -203,15 +248,17 @@ class PeerDiscovery:
 
     def _udp_announce_loop(self) -> None:
         local_ip = _get_local_ip()
-        payload = json.dumps(
-            {
-                "peer_id": self.peer_id,
-                "device_name": self.device_name,
-                "address": local_ip,
-                "port": self.service_port,
-                "public_key": self.public_key,
-            }
-        ).encode()
+        message = {
+            "peer_id": self.peer_id,
+            "device_name": self.device_name,
+            "address": local_ip,
+            "port": self.service_port,
+            "public_key": self.public_key,
+        }
+        if self.signing_private_key:
+            message["signing_public_key"] = self.signing_public_key
+            message["signature"] = crypto_identity.sign_announcement(self.signing_private_key, self.peer_id, local_ip, self.service_port, self.public_key)
+        payload = json.dumps(message).encode()
         while not self._stop_event.is_set():
             try:
                 self._udp_sock.sendto(payload, ("<broadcast>", UDP_BROADCAST_PORT))
@@ -232,14 +279,27 @@ class PeerDiscovery:
                 peer_id = msg["peer_id"]
                 if peer_id == self.peer_id:
                     continue
+                address = msg["address"]
+                port = msg["port"]
+                public_key = msg.get("public_key", "")
+                # Same unconditional verify-and-pin as the mDNS path - see
+                # _MdnsListener._handle's own comment.
+                signing_public_key = msg.get("signing_public_key", "")
+                signature = msg.get("signature", "")
+                if not signing_public_key or not signature:
+                    continue
+                if not crypto_identity.verify_announcement(signing_public_key, signature, peer_id, address, port, public_key):
+                    continue
+                if self._on_verify_signing_key and not self._on_verify_signing_key(peer_id, signing_public_key):
+                    continue
                 self.registry.upsert(
                     Peer(
                         peer_id=peer_id,
                         name=msg.get("device_name", peer_id),
-                        address=msg["address"],
-                        port=msg["port"],
+                        address=address,
+                        port=port,
                         source="udp",
-                        public_key=msg.get("public_key", ""),
+                        public_key=public_key,
                     )
                 )
             except (KeyError, ValueError, UnicodeDecodeError):

@@ -67,13 +67,25 @@ app.add_middleware(
 )
 
 store = MessageStore(DB_PATH)
-# This device's own X25519 keypair - generated once, persisted in this same
-# db, reused for every future launch. Broadcast openly via discovery so any
-# peer can derive a shared encryption key with this device (see
-# crypto_identity.py). Resolved here, before PeerDiscovery even exists,
-# the same way NAME/PORT/PEER_ID already are above.
+# This device's own X25519 (encryption) and Ed25519 (discovery-broadcast
+# signing) keypairs - generated once, persisted in this same db, reused for
+# every future launch. Both public halves are broadcast openly via
+# discovery (see crypto_identity.py). Resolved here, before PeerDiscovery
+# even exists, the same way NAME/PORT/PEER_ID already are above.
 _device_keys = store.get_or_create_device_keys()
-discovery = PeerDiscovery(device_name=NAME, service_port=PORT, peer_id=PEER_ID, public_key=_device_keys["public_key"])
+discovery = PeerDiscovery(
+    device_name=NAME,
+    service_port=PORT,
+    peer_id=PEER_ID,
+    public_key=_device_keys["public_key"],
+    signing_private_key=_device_keys["signing_private_key"],
+    signing_public_key=_device_keys["signing_public_key"],
+    # The real fix for the discovery-spoofing hole an adversarial test
+    # found: every incoming announcement's signing key is checked against
+    # this, synchronously, before it's ever allowed to reach the live
+    # registry - not lazily, later, inside messaging.py.
+    on_verify_signing_key=store.check_and_pin_signing_key,
+)
 
 # UI clients connected to /events - pushed to as things happen, rather than
 # making the frontend poll for messages/offers/transfer status.
@@ -169,7 +181,7 @@ def _on_disappearing_swept(peer_id: str, count: int) -> None:
 
 def _on_identity_changed(peer_id: str, name: str) -> None:
     # A peer_id we already had a trust-on-first-use key recorded for just
-    # showed up with a *different* key - see messaging.py's get_shared_key.
+    # showed up with a *different* key - see messaging.py's get_directional_keys.
     # Real signal worth a human's attention (someone else now claiming this
     # identity, or a genuine reinstall on their end), so this is surfaced
     # rather than silently accepted or silently blocked.

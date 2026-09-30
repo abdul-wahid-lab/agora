@@ -84,8 +84,8 @@ async def main() -> None:
 
     alice_store = MessageStore(str(tmp / "alice.db"))
     bob_store = MessageStore(str(tmp / "bob.db"))
-    alice_disc = PeerDiscovery(device_name="Alice", service_port=8301, peer_id="alice-bw-test", public_key=alice_store.get_or_create_device_keys()["public_key"])
-    bob_disc = PeerDiscovery(device_name="Bob", service_port=8302, peer_id="bob-bw-test", public_key=bob_store.get_or_create_device_keys()["public_key"])
+    alice_disc = PeerDiscovery(device_name="Alice", service_port=8301, peer_id="alice-bw-test", public_key=alice_store.get_or_create_device_keys()["public_key"], signing_private_key=alice_store.get_or_create_device_keys()["signing_private_key"], signing_public_key=alice_store.get_or_create_device_keys()["signing_public_key"])
+    bob_disc = PeerDiscovery(device_name="Bob", service_port=8302, peer_id="bob-bw-test", public_key=bob_store.get_or_create_device_keys()["public_key"], signing_private_key=bob_store.get_or_create_device_keys()["signing_private_key"], signing_public_key=bob_store.get_or_create_device_keys()["signing_public_key"])
     alice_msg = MessagingService(alice_disc, alice_store)
     bob_msg = MessagingService(bob_disc, bob_store)
 

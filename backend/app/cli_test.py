@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import time
 
+from app import crypto_identity
 from app.discovery import PeerDiscovery
 
 
@@ -26,7 +27,17 @@ def main() -> None:
     parser.add_argument("--port", type=int, required=True, help="Port this device's service runs on")
     args = parser.parse_args()
 
-    discovery = PeerDiscovery(device_name=args.name, service_port=args.port)
+    # A throwaway, session-only signing identity (not persisted via
+    # storage.py, since this pure discovery diagnostic has no db) - just
+    # enough for this process's own announcements to be signed, since
+    # discovery.py now rejects unsigned announcements outright (see
+    # crypto_identity.py's Phase 5b). Two of these run against each other
+    # (the normal way to use this tool) verify each other's signatures
+    # fine; there's no persistent pinning here, so a signing key "changing"
+    # between runs is expected and not flagged - that's storage.py's job in
+    # the real app, not this tool's.
+    signing_private_key, signing_public_key = crypto_identity.generate_signing_keypair()
+    discovery = PeerDiscovery(device_name=args.name, service_port=args.port, signing_private_key=signing_private_key, signing_public_key=signing_public_key)
     print(f"[{args.name}] peer_id={discovery.peer_id} starting discovery on port {args.port} ...")
     discovery.start()
 

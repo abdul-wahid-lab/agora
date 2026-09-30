@@ -51,6 +51,19 @@ from app.storage import FileRecord, MessageStore
 
 CHUNK_SIZE = 256 * 1024
 LENGTH_PREFIX = struct.Struct(">I")  # 4-byte big-endian length of the encrypted blob that follows
+# A real chunk is at most CHUNK_SIZE plaintext bytes + 12-byte nonce +
+# 16-byte AEAD tag. Anything claiming to be bigger than that is either a
+# protocol bug or someone connected to this listener claiming an absurd
+# length (found via testing: with no cap, a length prefix of ~4GB and then
+# silence left the receive loop blocked in readexactly() forever, with no
+# way out - a real, confirmed slow-loris-style hang, not theoretical).
+MAX_ENCRYPTED_CHUNK_LEN = CHUNK_SIZE + 64
+# Generous safety net, not a UX-facing countdown - same philosophy as the
+# offer-response wait's own timeout below: a real chunk should never
+# realistically take this long even on a slow LAN, this exists purely to
+# stop a stalled/malicious sender from tying up this task and its open
+# socket indefinitely.
+CHUNK_READ_TIMEOUT_SECONDS = 60
 EXECUTABLE_EXTS = {".apk", ".exe", ".msi", ".bat", ".cmd", ".com", ".sh", ".jar", ".appimage", ".ps1"}
 
 # Bandwidth-sharing throttle (see _stream_to_peer's is_call_active branch).
@@ -258,13 +271,18 @@ class FileTransferService:
         self._result_waiters[transfer_id] = result_future
         await self.store.update_file_status(transfer_id, "transferring")
 
-        shared_key = await self.messaging.get_shared_key(peer_id)
-        if shared_key is None:
+        # send_key, not a single shared key - see crypto_identity's
+        # directional-key comments for why (a reflection attack was
+        # confirmed with a single symmetric key: a captured chunk sent
+        # here could otherwise be replayed back to this device and decrypt
+        # successfully as if it were an incoming chunk from the peer).
+        send_key = await self.messaging.get_send_key(peer_id)
+        if send_key is None:
             await self.store.update_file_status(transfer_id, "failed")
             raise ConnectionError(f"peer {peer_id}'s key isn't resolved - can't encrypt this transfer")
 
         try:
-            await self._stream_to_peer(peer.address, response["port"], path, response.get("resume_at", 0), transfer_id, size, shared_key)
+            await self._stream_to_peer(peer.address, response["port"], path, response.get("resume_at", 0), transfer_id, size, send_key)
         except OSError:
             # Dropped mid-stream (WiFi hiccup, peer closed). Leave it
             # 'offered' rather than 'failed' - resend() picks up from here.
@@ -354,13 +372,15 @@ class FileTransferService:
         part_path = self.incoming_dir / f"{transfer_id}.part"
         resume_at = part_path.stat().st_size if part_path.exists() else 0
 
-        shared_key = await self.messaging.get_shared_key(record.peer_id)
-        if shared_key is None:
+        # recv_key, not a single shared key - see the matching comment in
+        # _offer_and_stream and crypto_identity.derive_directional_keys.
+        recv_key = await self.messaging.get_recv_key(record.peer_id)
+        if recv_key is None:
             await self.store.update_file_status(transfer_id, "failed")
             raise ConnectionError(f"peer {record.peer_id}'s key isn't resolved - can't decrypt this transfer")
 
         async def _on_client(reader, writer):
-            await self._receive(reader, writer, transfer_id, record, part_path, resume_at, shared_key)
+            await self._receive(reader, writer, transfer_id, record, part_path, resume_at, recv_key)
 
         server = await asyncio.start_server(_on_client, "0.0.0.0", 0)
         self._listeners[transfer_id] = server
@@ -377,17 +397,36 @@ class FileTransferService:
         try:
             mode = "ab" if resume_at else "wb"
             received = resume_at
+            # Set when the stream itself is untrustworthy (oversized length
+            # claim, or a chunk that fails to authenticate) - checked right
+            # after the file handle below is closed, since deleting a file
+            # that's still open raises PermissionError on Windows (found by
+            # testing the oversized-length-claim fix itself: the ONLY thing
+            # broken by that fix was trying to unlink() from inside this
+            # same `with open(...)` block).
+            untrusted_stream = False
             with open(part_path, mode) as f:
                 while True:
                     try:
-                        prefix = await reader.readexactly(LENGTH_PREFIX.size)
+                        prefix = await asyncio.wait_for(reader.readexactly(LENGTH_PREFIX.size), timeout=CHUNK_READ_TIMEOUT_SECONDS)
                         (blob_len,) = LENGTH_PREFIX.unpack(prefix)
-                        blob = await reader.readexactly(blob_len)
+                        if blob_len > MAX_ENCRYPTED_CHUNK_LEN:
+                            # Not a real chunk from real Agora code - abort
+                            # rather than trying to read however many bytes
+                            # were claimed.
+                            untrusted_stream = True
+                            break
+                        blob = await asyncio.wait_for(reader.readexactly(blob_len), timeout=CHUNK_READ_TIMEOUT_SECONDS)
                     except asyncio.IncompleteReadError:
                         # Clean end of stream (sender finished, or the
                         # connection dropped mid-chunk) - either way, the
                         # size check right below already tells the caller
                         # whether the whole file actually arrived.
+                        break
+                    except asyncio.TimeoutError:
+                        # A connected peer went silent mid-chunk for far
+                        # longer than any real transfer ever should -
+                        # treat exactly like a mid-stream drop.
                         break
                     try:
                         chunk = crypto_identity.decrypt(shared_key, blob)
@@ -395,15 +434,19 @@ class FileTransferService:
                         # A third party connected to this listener without
                         # the real shared key, or the stream desynced -
                         # either way, nothing after this can be trusted.
-                        part_path.unlink(missing_ok=True)
-                        await self.store.update_file_status(transfer_id, "failed")
-                        if self.on_received:
-                            self.on_received(transfer_id, "failed", None)
-                        return
+                        untrusted_stream = True
+                        break
                     f.write(chunk)
                     received += len(chunk)
                     if self.on_progress:
                         self.on_progress(transfer_id, received, record.size)
+
+            if untrusted_stream:
+                part_path.unlink(missing_ok=True)
+                await self.store.update_file_status(transfer_id, "failed")
+                if self.on_received:
+                    self.on_received(transfer_id, "failed", None)
+                return
 
             if received != record.size:
                 # Dropped before the full file arrived. Leave the .part file
