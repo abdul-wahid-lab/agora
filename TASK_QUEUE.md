@@ -815,6 +815,113 @@ to what's actually still missing:
   drop the "not yet independently verifiable" caveat this entry used to
   justify.
 
+  **Addendum, 2026-10-01: stress-testing the signed-discovery fix itself
+  found two more real bugs, both fixed.** Requested explicitly ("find more
+  errors and fix them... stress test them"), aimed specifically at the
+  newest code from the addendum above, on the theory that a brand-new fix
+  is exactly where a brand-new bug is most likely to be hiding. It was:
+
+  1. **A TOCTOU race in `check_and_pin_signing_key` itself - confirmed,
+     then fixed.** The method's original shape was a plain SELECT (is a
+     key already pinned?) followed by a separate INSERT if not - correct
+     for one caller at a time, but discovery.py's real callers are two
+     genuinely independent OS threads (the mDNS listener thread and the
+     UDP listener thread), and a brand-new peer_id's mDNS and UDP
+     announcements can arrive within microseconds of each other. Proven
+     exploitable directly: two real threads racing to pin the same
+     never-before-seen peer_id with two *different* keys, both read
+     "nothing pinned yet" before either commit, and **both** returned
+     `True` - the exact TOCTOU pattern that could let a precisely-timed
+     forged announcement win equal footing with a real one on a first
+     sighting, undermining the guarantee the whole fix above exists to
+     provide. Fixed by wrapping the check and the write in one atomic
+     `BEGIN IMMEDIATE` transaction with a `busy_timeout` - a second
+     thread's own transaction now blocks until the first one fully
+     commits, instead of racing it. Re-tested: 20/20 concurrent trials
+     with the fix landed exactly one winner, zero with both.
+  2. **Unbounded `known_peers` growth, made cheaper by the fix above -
+     confirmed, then fixed.** Trust-on-first-use (both the older
+     encryption-key path and the new signing-key one) permanently
+     remembers every never-before-seen peer_id it's ever pinned, with no
+     cap and no expiry. That was already true before this session, but
+     reaching it used to require an attacker to complete a real WebSocket
+     handshake per fake identity; the signed-discovery fix made the exact
+     same permanent-insert path reachable with nothing more than one
+     cheap, self-signed, one-way UDP packet per fake peer_id - no
+     connection needed at all. Measured directly: a local flood of 5,000
+     distinct self-signed fake identities inserted all 5,000 rows with no
+     pushback, extrapolating to roughly a quarter-million permanent rows
+     an hour sustained. Fixed with a new `MAX_KNOWN_PEERS` cap (10,000 -
+     generous for what this app actually is, a LAN chat app, not a
+     service with a real user base in the millions) and oldest-
+     `last_seen`-evicted-first eviction, applied to every first-sighting
+     insert path into that table: `check_and_pin_signing_key`,
+     `check_and_remember_peer_key`, and `save_known_peer` (the
+     contacts-import path, lower severity since it's local-API-only, but
+     fixed for consistency). Re-tested: a 200-identity flood against a
+     (deliberately lowered for a fast test) cap of 50 landed exactly 50
+     rows, the oldest entries gone, the newest kept.
+
+  **Also stress-tested, no bug found, kept as regression coverage:**
+  high-volume message throughput (500 real encrypted messages sent as
+  fast as possible - all 500 arrived, no loss, no duplication, no
+  corruption) and a 10-peer full-mesh discovery+messaging scenario (all
+  10 peers discovered all 9 others and successfully exchanged real
+  encrypted messages both ways with every other peer, 90 messages total,
+  correctly delivered).
+
+  **A real, separate performance characteristic was found and understood,
+  though it turned out not to be about disk I/O at all.** The 500-message
+  throughput test above completed at roughly 20 messages/second - slower
+  than expected for encryption this cheap (measured independently at
+  under 0.01ms per operation) on a purely local connection. Profiling
+  traced almost all of the real time to two separate SQLite round trips
+  per message (`save_message`, then later `update_status`), each around
+  20ms. Enabling WAL mode (`journal_mode=WAL` + `synchronous=NORMAL`,
+  SQLite's own recommended pairing - still fully crash-safe, the only
+  trade-off is a vanishingly small durability window on true power loss)
+  was the obvious first fix to try, and is now in place project-wide via
+  a single shared `_connect()` helper every method routes through - but
+  it turned out **not** to be the actual bottleneck: a controlled
+  before/after comparison showed no meaningful throughput change from WAL
+  mode alone. Isolating further, raw synchronous SQLite (no `asyncio` at
+  all) completed the identical fresh-connection-per-call pattern in
+  ~7ms, while the real `asyncio.to_thread`-wrapped call measured ~20ms -
+  the gap is `asyncio.to_thread`'s own thread-pool dispatch overhead, not
+  disk I/O, not SQLite, and not this app's own crypto. Kept the WAL
+  change anyway (a real, valid improvement for read/write concurrency
+  safety, independent of this specific number), but did **not** further
+  chase the `asyncio.to_thread` overhead itself - reducing it would mean
+  a real architectural change (e.g. a persistent connection / an async
+  SQLite driver), a bigger undertaking than this pass's scope, and not
+  something real human usage (a person sending messages one at a time,
+  not benchmarking) is likely to ever notice. Documented here rather than
+  quietly dropped, since "investigated a real report, found the true
+  cause, decided not to chase it further" is a different (and more
+  honest) outcome than either "fixed" or "ignored."
+
+  A 10-peer mDNS+UDP discovery convergence time was also measured (2
+  peers: 4.7s, 5 peers: 9.8s, 10 peers: 18.4s - roughly linear, ~1.9s per
+  additional peer) while building the mesh test above. Noted rather than
+  chased further: all instances shared one machine/one process/one
+  network stack for this test, which is not how real deployment works
+  (each peer is a separate physical device), so this number may be an
+  artifact of that test's own setup rather than a real per-device
+  discovery cost - confirming which would need actual separate hardware,
+  not something to guess at from a single-machine test.
+
+  **Tests**: a new permanent suite,
+  [_test_stress.py](backend/app/_test_stress.py) (4 tests): the signing-
+  key pin race, run 10 concurrent trials, asserts exactly one winner every
+  time; the known_peers cap, flooded with 200 identities against a small
+  test cap, asserts the table stays bounded with the right entries
+  evicted; a 100-message throughput regression check (smaller than the
+  500-message exploratory run, kept fast for routine runs); a 5-peer mesh
+  discovery+delivery regression check (smaller than the 10-peer
+  exploratory run, same reasoning). All 14 backend suites (the previous
+  13 plus this new one) re-verified green together, and `_test_stress.py`
+  run 3 times on its own to confirm the concurrency tests aren't flaky.
+
 ## Bigger features, explicitly out of scope until backend work happens
 
 - [x] **Group chat / group calling, including file + image sharing inside a
@@ -1015,36 +1122,115 @@ to what's actually still missing:
   the phone reimplements the same wire protocol natively rather than running
   the Python backend on-device. Deliberately deferred until desktop is
   fully validated on two real machines.
-- [ ] **Screen sharing during a call.** Requested 2026-10-01, not started.
-  Scoped explicitly as working from **either** an audio call or a video
-  call - not gated behind video-only, since the whole point is letting
-  someone show their screen even when the call itself started as
-  audio-only (their camera can stay off the entire time). Real work, not a
-  small addition: `useCall.js`/`useGroupCall.js` currently negotiate a
-  fixed audio/video `getUserMedia` stream per call; this needs a second,
-  independent `getDisplayMedia()` capture that can start and stop mid-call
-  without renegotiating the whole connection from scratch, plus a
-  browser/Electron permission prompt for screen capture specifically
-  (distinct from the camera/mic permission already handled in onboarding),
-  plus UI for the sharer (a "Share Screen"/"Stop Sharing" control inside
-  `CallOverlay.jsx`/`GroupCallOverlay.jsx`, a picker if more than one
-  monitor/window is available) and for the viewer (the shared screen
-  needs to become the primary video tile, distinguishable from an actual
-  webcam feed - WhatsApp/Zoom-style, not indistinguishable from a face).
-  For a group call, this also needs a real decision about mesh bandwidth
-  (Step 14/`groups.py`'s existing 4-person full-mesh cap already exists
-  because of bandwidth concerns with video alone - adding a screen share
-  stream to that same mesh needs its own look before assuming it just
-  works at the current cap).
+- [x] **Screen sharing during a call** (fixed 2026-10-01). Works from
+  **either** an audio call or a video call, exactly as scoped - not gated
+  behind video-only, since the whole point is letting someone show their
+  screen even when the call itself started as audio-only, camera never
+  touched.
 
-  **Explicitly linked follow-up, not in scope yet:** the user has a
+  **The real design decision, and why it needed no backend/wire-protocol
+  changes at all:** the obvious approach - start sharing, then renegotiate
+  the connection with a new SDP offer/answer - would have needed new
+  `calling.py` wire message types and new state, with real risk of
+  colliding with the existing busy/collision call logic (any `call_offer`
+  arriving for an already-`in_call` peer is currently treated as a second,
+  unwanted call attempt and refused). Used a different, standard WebRTC
+  pattern instead: every call - audio or video - pre-negotiates a second,
+  initially-empty video "slot" (an `RTCRtpTransceiver`, added right after
+  this device's own camera/mic tracks but before the one and only
+  offer/answer this call ever does) plus a data channel, both as part of
+  the SAME initial negotiation. Starting to share is just
+  `RTCRtpSender.replaceTrack()` into that already-negotiated slot - no new
+  SDP round trip, `calling.py` never even knows it happened.
+  [crypto_identity.py](backend/app/crypto_identity.py),
+  [messaging.py](backend/app/messaging.py), and
+  [calling.py](backend/app/calling.py) are completely unmodified by this
+  feature.
+
+  **How the viewer finds out sharing started/stopped** - the one part that
+  did need a first design correction, caught by real testing, not assumed:
+  the original plan relied on the pre-negotiated track's own native
+  mute/unmute events (no track attached = muted, a real signal WebRTC
+  already provides). Live-tested against two real separate backend
+  processes and it did not fire reliably - `replaceTrack(null)` stopped
+  real frames but the receiver's `track.muted` stayed `false` for over 25
+  seconds, nowhere near responsive enough for a working "stop sharing"
+  button. Replaced with an explicit message ("screen_share_start"/"stop")
+  sent over a small `RTCDataChannel`, pre-negotiated in the exact same
+  connection the same way as the video slot - still zero changes to this
+  app's own signaling protocol, since it rides the WebRTC connection
+  directly, peer to peer, never touching `messaging.py`/`calling.py`.
+  Re-tested after the fix: correctly reverts within ~1 second.
+
+  **Electron scaffolding, built from nothing** (a repo-wide search found
+  zero prior screen-capture code anywhere in the project):
+  `session.defaultSession.setDisplayMediaRequestHandler` in
+  [main.cjs](frontend/electron/main.cjs) (without this,
+  `getDisplayMedia()` just rejects outright under Electron - there's no
+  default behavior to fall back on), backed by `desktopCapturer` and two
+  new IPC channels (`screen:getSources`, `screen:choose`) since Electron
+  has no built-in source picker on Windows the way some platforms do. A
+  real picker UI
+  ([ScreenSharePickerModal.jsx](frontend/src/components/ScreenSharePickerModal.jsx))
+  shows real thumbnails when more than one screen exists, and skips itself
+  entirely (auto-selects) for the common single-monitor case rather than
+  asking a pointless "which of your 1 screens?" question. Gracefully
+  degrades to the browser's own native picker with zero custom UI when
+  `window.electronAPI` doesn't exist at all (a plain browser/dev context) -
+  a real crash was found and fixed here too: calling `.then()` on
+  `window.electronAPI?.getScreenSources?.()` when the bridge doesn't
+  exist throws immediately, since optional chaining short-circuits to
+  `undefined`, not a promise.
+
+  **Real UI, not a stub**: the shared screen becomes the main stage tile in
+  [CallOverlay.jsx](frontend/src/components/CallOverlay.jsx) (`objectFit:
+  contain`, not `cover` - cropping someone's real screen content would cut
+  off content, not just background, unlike a face), labelled distinctly
+  from a camera tile ("{name}'s screen"); in
+  [GroupCallOverlay.jsx](frontend/src/components/GroupCallOverlay.jsx) it's
+  an extra grid tile (spanning 2 columns) per sharing participant, correctly
+  sized into the grid's existing column-count logic. A group screen share
+  broadcasts to every mesh leg at once from one real capture
+  (`Promise.all` over every leg's transceiver), and a member who joins
+  mid-share gets caught up automatically once their own data channel opens
+  - not left seeing a blank tile until someone restarts the share.
+
+  **Tests performed** - live, against two real separate backend processes,
+  two real headless-Chrome instances with fake media devices
+  (`--use-fake-device-for-media-stream`, real MediaStreamTracks, not
+  stubs), driven via CDP, not just a build check:
+  - A real **audio** call: connects, "Share screen" is present and
+    clickable (not gated on video), the viewer's UI shows the real
+    shared-screen tile, and the viewer's `<video>` element has a real,
+    live `MediaStreamTrack` attached (`readyState: "live"`, real
+    `videoWidth`/`videoHeight` - actual WebRTC media, not UI state).
+    Stopping correctly reverts the viewer's UI.
+  - A real **video** call - the harder case, since two video transceivers
+    now exist (camera + screen), genuinely exercising the "last video
+    transceiver is always the screen slot" disambiguation logic the audio
+    case can't touch at all: confirmed the real camera feed works
+    correctly *before* sharing is ever touched, confirmed the viewer ends
+    up with **two** simultaneous real, live video tracks once sharing
+    starts (camera not clobbered by screen, or vice versa), confirmed
+    stopping correctly reverts.
+  - The mute/unmute failure above was itself caught by this same live
+    testing (not assumed), root-caused with direct instrumentation of the
+    real track's `muted` property, and re-verified fixed the same way.
+  - Group-call screen sharing was not live-tested with a real multi-person
+    mesh (the same per-leg mechanism as the 1:1 case, already proven twice
+    above, applied in a loop) - noted honestly rather than claimed as
+    verified when it wasn't.
+- [ ] **Video/call recording.** Requested 2026-10-01, not started, and a
+  genuinely separate task from screen sharing above (not "recording for
+  screen shares specifically" - corrected after initially being scoped as
+  a follow-up bolted onto that feature, which was wrong). The user has a
   separate existing repo with a working video-recording feature they'll
-  hand over later, specifically to bring recording into *this* screen-
-  sharing feature once it's built (i.e., record the shared screen, not
-  just a talking-head video call) - noted here so that when screen sharing
-  above gets built, its architecture should leave room for a recording
-  tap-in rather than needing a rework once that repo arrives. Nothing to
-  build from that repo until it's actually provided.
+  hand over later, to be brought into Agora as its own real feature.
+  Nothing to build until that repo is actually provided - no shape/design
+  decisions made yet (what gets recorded - camera, screen, both; where a
+  recording is saved; whether the peer being recorded is notified/consents,
+  a real privacy question worth deciding deliberately rather than
+  defaulting to silent).
 - [x] **Block a peer** (fixed 2026-09-29). Real backend enforcement, not a
   UI-only switch: a new `blocked_peers` table in
   [storage.py](backend/app/storage.py), checked from a single real choke

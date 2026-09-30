@@ -35,6 +35,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   setAlwaysOnTop: (value) => ipcRenderer.invoke("app:setAlwaysOnTop", value),
   getAlwaysOnTop: () => ipcRenderer.invoke("app:getAlwaysOnTop"),
   openExternal: (url) => ipcRenderer.invoke("shell:openExternal", url),
+  getScreenSources: () => ipcRenderer.invoke("screen:getSources"),
+  chooseScreenSource: (sourceId) => ipcRenderer.send("screen:choose", sourceId),
 });
 
 // Tells api.js which port main.cjs actually spawned the backend on, so the

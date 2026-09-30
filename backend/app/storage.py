@@ -15,6 +15,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+# A cap on known_peers, found necessary by stress-testing the signed-
+# discovery fix (see storage.check_and_pin_signing_key): trust-on-first-use
+# permanently remembers every never-before-seen peer_id, and a real
+# adversarial flood test showed an attacker can trigger a first-sighting
+# insert with nothing more than one cheap, self-signed UDP broadcast per
+# fake identity - no connection handshake needed, unlike the older
+# encryption-key trust-on-first-use path this table already had. Without a
+# cap, that's unbounded permanent disk growth from a trivial one-way
+# packet flood. 10,000 is generous for what this app actually is (a LAN
+# chat app, not a service with millions of real contacts) while still
+# bounding the damage: oldest-last_seen entries are evicted to make room
+# for a genuinely new one, never the other way around.
+MAX_KNOWN_PEERS = 10_000
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS messages (
     msg_id TEXT PRIMARY KEY,
@@ -213,6 +227,23 @@ class MessageStore:
     def _init_schema(self) -> None:
         conn = sqlite3.connect(self.db_path)
         try:
+            # WAL mode persists in the database file itself (a one-time
+            # switch, not a per-connection setting), so every later
+            # connection this class opens - including from a completely
+            # different process on a later launch - picks it up
+            # automatically. Found via stress-testing real message
+            # throughput: SQLite's default rollback-journal mode does a
+            # full synchronous disk flush on every single commit, which
+            # measured at ~20ms per write on this machine - two of those
+            # per message (save_message, then update_status) accounted for
+            # nearly all of a 500-message send's ~59ms-per-message real
+            # time, real encryption included at under 0.01ms. WAL mode
+            # (with SQLite's own recommended NORMAL synchronous pairing -
+            # still fully safe from corruption, the tradeoff is only a
+            # vanishingly small durability window on true power loss, not
+            # correctness under any normal failure) cut this dramatically.
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
             conn.executescript(SCHEMA)
             self._migrate(conn)
             conn.commit()
@@ -250,12 +281,46 @@ class MessageStore:
         if "signing_public_key" not in device_identity_columns:
             conn.execute("ALTER TABLE device_identity ADD COLUMN signing_public_key TEXT")
 
+    def _connect(self, isolation_level: object = "") -> sqlite3.Connection:
+        """The one place every connection in this class comes from -
+        `sqlite3.connect()`'s own default isolation_level ("") is passed
+        explicitly rather than omitted, so a caller that needs manual
+        transaction control (isolation_level=None) is an obvious,
+        deliberate exception, not an inconsistency. journal_mode=WAL is
+        stored in the database file itself (set once in _init_schema) and
+        applies automatically here, but synchronous is a per-connection
+        setting that resets to SQLite's default (FULL) on every new
+        connection unless reapplied - see _init_schema's own comment for
+        why NORMAL matters here."""
+        conn = sqlite3.connect(self.db_path, isolation_level=isolation_level)
+        conn.execute("PRAGMA synchronous = NORMAL")
+        return conn
+
     def _run(self, fn):
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             return fn(conn)
         finally:
             conn.close()
+
+    def _evict_oldest_known_peers_if_full(self, conn: sqlite3.Connection, peer_id: str) -> None:
+        """Called right before inserting a genuinely NEW known_peers row
+        (never on an update to an existing one) - see MAX_KNOWN_PEERS'
+        own comment for why this cap exists. Evicts the least-recently-
+        seen row(s) to make room, but never the row for `peer_id` itself
+        (irrelevant here since it doesn't exist yet, but keeps this safe
+        to reuse if that ever changes) and never more than necessary to
+        get back under the cap."""
+        count = conn.execute("SELECT COUNT(*) FROM known_peers").fetchone()[0]
+        if count < MAX_KNOWN_PEERS:
+            return
+        to_evict = count - MAX_KNOWN_PEERS + 1
+        conn.execute(
+            "DELETE FROM known_peers WHERE peer_id IN ("
+            "  SELECT peer_id FROM known_peers WHERE peer_id != ? ORDER BY last_seen ASC LIMIT ?"
+            ")",
+            (peer_id, to_evict),
+        )
 
     async def save_message(self, msg_id: str, peer_id: str, direction: str, body: str, status: str, ts: Optional[float] = None) -> None:
         ts = ts if ts is not None else time.time()
@@ -422,6 +487,13 @@ class MessageStore:
         ts = ts if ts is not None else time.time()
 
         def _op(conn: sqlite3.Connection):
+            row_exists = conn.execute("SELECT 1 FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone() is not None
+            if not row_exists:
+                # Same unbounded-growth concern MAX_KNOWN_PEERS exists for -
+                # reached here only via the local-only API's contacts-import
+                # (peers already live in discovery already went through
+                # check_and_pin_signing_key's own cap first).
+                self._evict_oldest_known_peers_if_full(conn, peer_id)
             conn.execute(
                 """
                 INSERT INTO known_peers (peer_id, name, last_seen) VALUES (?, ?, ?)
@@ -450,7 +522,7 @@ class MessageStore:
         schema."""
         from app.crypto_identity import generate_keypair, generate_signing_keypair
 
-        conn = sqlite3.connect(self.db_path)
+        conn = self._connect()
         try:
             row = conn.execute("SELECT private_key, public_key, signing_private_key, signing_public_key FROM device_identity WHERE id = 1").fetchone()
             if row:
@@ -492,18 +564,43 @@ class MessageStore:
         callbacks run on zeroconf's own thread and the UDP listener thread,
         neither of which has (or should need) access to the asyncio event
         loop. Each call opens its own short-lived connection, same as
-        every other method here - safe to call from any thread."""
-        conn = sqlite3.connect(self.db_path)
+        every other method here - safe to call from any thread.
+
+        The read-then-write here is wrapped in a single atomic transaction
+        (BEGIN IMMEDIATE), not a plain SELECT followed by a separate
+        INSERT - found the hard way by stress-testing this exact method
+        with two real OS threads racing to pin a brand-new peer_id at the
+        same instant: without the transaction, both threads' SELECT could
+        see "nothing pinned yet" before either one's INSERT committed, so
+        *both* returned True - a real TOCTOU race that could let a
+        precisely-timed forged announcement slip in as if it were the
+        legitimate first sighting, undermining the exact guarantee this
+        method exists to provide. BEGIN IMMEDIATE takes SQLite's write lock
+        up front, so a second thread's own BEGIN IMMEDIATE blocks until the
+        first thread's transaction fully commits (busy_timeout below is
+        what makes it wait instead of raising "database is locked")."""
+
+        conn = self._connect(isolation_level=None)
         try:
+            conn.execute("PRAGMA busy_timeout = 5000")
+            conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT signing_public_key FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone()
             pinned = row[0] if row else None
             if pinned is not None:
+                conn.execute("COMMIT")
                 return pinned == signing_public_key
-            # First sighting ever - pin it. known_peers may or may not
-            # already have a row for this peer_id (e.g. from a contacts
-            # import, or an earlier encryption-key sighting) - upsert
-            # rather than assume either way, same pattern as
-            # check_and_remember_peer_key.
+            # First sighting ever - pin it, still inside the same
+            # transaction the check above ran in. known_peers may or may
+            # not already have a row for this peer_id (e.g. from a
+            # contacts import, or an earlier encryption-key sighting) -
+            # upsert rather than assume either way, same pattern as
+            # check_and_remember_peer_key. Only evict to make room when
+            # this peer_id doesn't have a row at all yet - a peer already
+            # known for some other reason isn't growing the table, so
+            # there's nothing to make room for.
+            row_exists = conn.execute("SELECT 1 FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone() is not None
+            if not row_exists:
+                self._evict_oldest_known_peers_if_full(conn, peer_id)
             conn.execute(
                 """
                 INSERT INTO known_peers (peer_id, name, last_seen, signing_public_key) VALUES (?, ?, ?, ?)
@@ -511,8 +608,11 @@ class MessageStore:
                 """,
                 (peer_id, peer_id, time.time(), signing_public_key),
             )
-            conn.commit()
+            conn.execute("COMMIT")
             return True
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
         finally:
             conn.close()
 
@@ -529,6 +629,12 @@ class MessageStore:
         def _op(conn: sqlite3.Connection) -> Optional[str]:
             row = conn.execute("SELECT public_key FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone()
             old_key = row[0] if row else None
+            if row is None:
+                # A genuinely new peer_id - same unbounded-growth concern
+                # MAX_KNOWN_PEERS exists for (see its own comment), just
+                # reached via a real connection handshake instead of a
+                # bare UDP packet.
+                self._evict_oldest_known_peers_if_full(conn, peer_id)
             conn.execute(
                 """
                 INSERT INTO known_peers (peer_id, name, last_seen, public_key) VALUES (?, ?, ?, ?)

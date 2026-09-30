@@ -25,7 +25,7 @@
 // Dev mode still uses the venv directly, since freezing on every code
 // change would make local development painfully slow.
 
-const { app, BrowserWindow, ipcMain, screen, dialog, shell } = require("electron");
+const { app, BrowserWindow, ipcMain, screen, dialog, shell, desktopCapturer, session } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -458,6 +458,27 @@ ipcMain.handle("shell:openExternal", (_e, url) => {
   return true;
 });
 
+// Screen sharing during a call. Electron has no built-in source picker (on
+// Windows, unlike macOS, there's no OS-native one Chromium can hand off to)
+// - this is the standard pattern instead: the renderer asks for the real
+// list of capturable screens first (via getSources below), shows its own
+// picker UI, and tells the main process which one was chosen (via
+// screen:choose) *before* it ever calls navigator.mediaDevices.
+// getDisplayMedia(). That call is what actually triggers
+// setDisplayMediaRequestHandler below, which just looks up whatever was
+// chosen moments earlier and hands it back - Electron's side of a real
+// screen-share, not a stub.
+let pendingScreenSourceId = null;
+
+ipcMain.handle("screen:getSources", async () => {
+  const sources = await desktopCapturer.getSources({ types: ["screen"], thumbnailSize: { width: 320, height: 200 } });
+  return sources.map((s) => ({ id: s.id, name: s.name, thumbnail: s.thumbnail.isEmpty() ? null : s.thumbnail.toDataURL() }));
+});
+
+ipcMain.on("screen:choose", (_e, sourceId) => {
+  pendingScreenSourceId = sourceId;
+});
+
 const gotLock = app.requestSingleInstanceLock();
 logToFile(`requestSingleInstanceLock() -> ${gotLock}`);
 if (!gotLock) {
@@ -483,6 +504,29 @@ if (!gotLock) {
     } catch (e) {
       logToFile(`createWindow() threw: ${e.stack || e}`);
     }
+
+    // Without this, navigator.mediaDevices.getDisplayMedia() in the
+    // renderer just rejects outright under Electron - there's no default
+    // behavior to fall back to the way a regular browser has one.
+    session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+      try {
+        const sources = await desktopCapturer.getSources({ types: ["screen"] });
+        const chosen = sources.find((s) => s.id === pendingScreenSourceId) || sources[0];
+        pendingScreenSourceId = null;
+        if (!chosen) {
+          callback({});
+          return;
+        }
+        // Video only, deliberately - getScreenStream() in lib/webrtc.js
+        // requests audio:false, and system-audio capture is a real,
+        // separate privacy decision (sharing your screen doesn't imply
+        // sharing whatever your speakers are playing) not bundled in here.
+        callback({ video: chosen });
+      } catch (e) {
+        logToFile(`setDisplayMediaRequestHandler failed: ${e.stack || e}`);
+        callback({});
+      }
+    });
 
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

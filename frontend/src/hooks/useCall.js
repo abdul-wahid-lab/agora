@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, connectEvents } from "../api";
-import { RTC_CONFIG, waitForIceGatheringComplete, getLocalStream, startRingtone } from "../lib/webrtc";
+import { RTC_CONFIG, waitForIceGatheringComplete, getLocalStream, startRingtone, addScreenTransceiver, findScreenTransceiver, getScreenStream } from "../lib/webrtc";
 import { isPeerMuted } from "../lib/mute";
 
 // Owns the entire calling lifecycle at the App level (not inside a specific
@@ -13,6 +13,8 @@ export function useCall() {
   const [elapsed, setElapsed] = useState(0);
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  const [sharingScreen, setSharingScreen] = useState(false);
+  const [remoteSharingScreen, setRemoteSharingScreen] = useState(false);
 
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -20,9 +22,32 @@ export function useCall() {
   const callRef = useRef(null);
   callRef.current = call;
 
+  // Screen sharing rides a second video transceiver that's pre-negotiated
+  // on every call, audio or video, from the moment it connects - see
+  // lib/webrtc.js's own comment for why (no renegotiation, no new wire
+  // messages, works whether this call is audio or video).
+  const screenTransceiverRef = useRef(null);
+  const screenStreamRef = useRef(null); // this device's own captured screen, while sharing
+  const remoteScreenStreamRef = useRef(null); // the peer's shared screen, while they're sharing
+  // How the *other* side finds out sharing started/stopped. The original
+  // design relied on the screen track's own mute/unmute events (no track
+  // attached = muted) - real testing (two live backends, two real
+  // browsers) showed this doesn't fire reliably: replaceTrack(null)
+  // stopped sending real frames, but the receiver's track.muted stayed
+  // false for well over 20 seconds, nowhere near responsive enough for a
+  // "stop sharing" button to feel real. A data channel is pre-negotiated
+  // the exact same way as the screen transceiver (added before the first
+  // offer, so it's part of the initial connection, not a renegotiation),
+  // and sending one explicit "started"/"stopped" message over it is
+  // immediate and unambiguous - still zero changes to this app's own
+  // backend/wire protocol, since it never touches messaging.py/calling.py
+  // at all, it rides the WebRTC connection directly, peer to peer.
+  const screenChannelRef = useRef(null);
+
   const localVideoRef = useRef(null);
   const remoteVideoRef = useRef(null);
   const remoteAudioRef = useRef(null);
+  const remoteScreenVideoRef = useRef(null);
 
   function cleanupCall() {
     pcRef.current?.close();
@@ -30,11 +55,20 @@ export function useCall() {
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
     remoteStreamRef.current = null;
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    screenStreamRef.current = null;
+    remoteScreenStreamRef.current = null;
+    screenTransceiverRef.current = null;
+    screenChannelRef.current?.close();
+    screenChannelRef.current = null;
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
     if (remoteVideoRef.current) remoteVideoRef.current.srcObject = null;
     if (remoteAudioRef.current) remoteAudioRef.current.srcObject = null;
+    if (remoteScreenVideoRef.current) remoteScreenVideoRef.current.srcObject = null;
     setMuted(false);
     setCameraOff(false);
+    setSharingScreen(false);
+    setRemoteSharingScreen(false);
   }
 
   useEffect(() => {
@@ -129,14 +163,53 @@ export function useCall() {
     }
   }, [call?.status, call?.media]);
 
+  // Same re-attach reasoning as above, for the shared-screen tile
+  // specifically: it only mounts once remoteSharingScreen flips true (see
+  // CallOverlay.jsx), which happens in the exact same tick as the track's
+  // onunmute handler tries to set its srcObject - too early for the ref to
+  // exist yet. This effect re-applies the already-captured stream once the
+  // element actually renders.
+  useEffect(() => {
+    if (remoteSharingScreen && remoteScreenVideoRef.current && remoteScreenStreamRef.current) {
+      remoteScreenVideoRef.current.srcObject = remoteScreenStreamRef.current;
+    }
+  }, [remoteSharingScreen]);
+
   useEffect(() => cleanupCall, []); // stop mic/camera if the app ever unmounts mid-call
+
+  function handleScreenChannelMessage(e) {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "screen_share_start") setRemoteSharingScreen(true);
+      else if (msg.type === "screen_share_stop") setRemoteSharingScreen(false);
+    } catch {
+      // ignore malformed frames rather than crash the call over it
+    }
+  }
 
   function setupPeerConnection(media) {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     pc.ontrack = (e) => {
+      // The screen-share slot is a real, separate transceiver, never mixed
+      // into the same stream as the camera/mic - see findScreenTransceiver's
+      // own comment for why comparing against it (recomputed fresh, not a
+      // stale stored reference) correctly identifies this event regardless
+      // of which transceiver's track fires ontrack first.
+      if (e.transceiver === findScreenTransceiver(pc)) {
+        remoteScreenStreamRef.current = new MediaStream([e.track]);
+        return;
+      }
       remoteStreamRef.current = e.streams[0];
       const target = media === "video" ? remoteVideoRef.current : remoteAudioRef.current;
       if (target) target.srcObject = e.streams[0];
+    };
+    // The answering side never calls createDataChannel itself - this is
+    // how it receives the channel the offering side created (see
+    // placeCall) as part of the same initial negotiation. Never fires on
+    // the side that created the channel.
+    pc.ondatachannel = (e) => {
+      screenChannelRef.current = e.channel;
+      e.channel.onmessage = handleScreenChannelMessage;
     };
     pc.oniceconnectionstatechange = () => {
       // "closed" also fires from our own pc.close() during a normal hang up -
@@ -146,6 +219,13 @@ export function useCall() {
         hangUp("dropped");
       }
     };
+    // Screen transceiver deliberately NOT added here - this needs to
+    // happen after the caller's own addTrack() calls (audio, and camera
+    // video for a video call), not before, so the screen slot is really
+    // the LAST video transceiver in creation order on both the offer and
+    // the answer - see findScreenTransceiver's own comment for why that
+    // ordering is the whole mechanism. Callers (placeCall/acceptCall) add
+    // it themselves right after their own addTrack calls.
     return pc;
   }
 
@@ -158,6 +238,14 @@ export function useCall() {
       const pc = setupPeerConnection(media);
       pcRef.current = pc;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+      screenTransceiverRef.current = addScreenTransceiver(pc);
+      // Only the offering side calls createDataChannel - the answering
+      // side receives this same channel via pc.ondatachannel once the
+      // offer negotiates it (see setupPeerConnection). Created before
+      // createOffer() below, so it's part of the one and only negotiation
+      // this call ever does, not a renegotiation.
+      screenChannelRef.current = pc.createDataChannel("agora-screen-share");
+      screenChannelRef.current.onmessage = handleScreenChannelMessage;
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -187,6 +275,11 @@ export function useCall() {
       const pc = setupPeerConnection(incoming.media);
       pcRef.current = pc;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+      // Same relative order as placeCall's offer side (own media first,
+      // screen slot last) - see setupPeerConnection's own comment for why
+      // that symmetry is what makes findScreenTransceiver's "last video
+      // transceiver" rule land on the same slot for both sides.
+      screenTransceiverRef.current = addScreenTransceiver(pc);
 
       await pc.setRemoteDescription(incoming.offerSdp);
       const answer = await pc.createAnswer();
@@ -232,20 +325,75 @@ export function useCall() {
     setCameraOff(!track.enabled);
   }
 
+  async function sendOnScreenChannel(payload) {
+    const channel = screenChannelRef.current;
+    if (!channel) return;
+    if (channel.readyState === "open") {
+      channel.send(JSON.stringify(payload));
+      return;
+    }
+    // Right after createDataChannel/ondatachannel the channel is still
+    // "connecting" until its underlying SCTP association finishes - a real
+    // gap found by testing: clicking "Share screen" the instant a call
+    // connects can race this. A few hundred ms is generous for a
+    // same-subnet connection that's already fully up.
+    await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 2000);
+      channel.addEventListener("open", () => {
+        clearTimeout(timeout);
+        resolve();
+      }, { once: true });
+    });
+    if (channel.readyState === "open") channel.send(JSON.stringify(payload));
+  }
+
+  async function startScreenShare() {
+    if (!screenTransceiverRef.current || sharingScreen) return;
+    try {
+      const stream = await getScreenStream();
+      const track = stream.getVideoTracks()[0];
+      screenStreamRef.current = stream;
+      await screenTransceiverRef.current.sender.replaceTrack(track);
+      await sendOnScreenChannel({ type: "screen_share_start" });
+      // The browser's own native "you are sharing your screen" bar has a
+      // real Stop button - this is the only way to find out if the user
+      // used *that* instead of this app's own control.
+      track.onended = () => stopScreenShare();
+      setSharingScreen(true);
+    } catch (e) {
+      // NotAllowedError: the user cancelled the source picker, or
+      // Electron's own handler declined - not a real error to surface.
+      if (e.name !== "NotAllowedError") setError("Couldn't start screen sharing.");
+    }
+  }
+
+  function stopScreenShare() {
+    screenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    screenStreamRef.current = null;
+    screenTransceiverRef.current?.sender.replaceTrack(null).catch(() => {});
+    sendOnScreenChannel({ type: "screen_share_stop" });
+    setSharingScreen(false);
+  }
+
   return {
     call,
     error,
     elapsed,
     muted,
     cameraOff,
+    sharingScreen,
+    remoteSharingScreen,
     localVideoRef,
     remoteVideoRef,
     remoteAudioRef,
+    remoteScreenVideoRef,
     placeCall,
     acceptCall,
     declineCall,
     hangUp,
     toggleMute,
     toggleCamera,
+    startScreenShare,
+    stopScreenShare,
   };
 }

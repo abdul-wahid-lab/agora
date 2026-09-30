@@ -1,3 +1,6 @@
+import { useState } from "react";
+import ScreenSharePickerModal from "./ScreenSharePickerModal";
+
 // Rendered at the App level (not inside CallsScreen) so an incoming call is
 // caught no matter which tab is open when it arrives - see BUILD_LOG's
 // Phase 3 notes for the bug this fixes (a call_incoming WS event is only
@@ -24,17 +27,30 @@ export default function CallOverlay({
   elapsed,
   muted,
   cameraOff,
+  sharingScreen,
+  remoteSharingScreen,
   localVideoRef,
   remoteVideoRef,
   remoteAudioRef,
+  remoteScreenVideoRef,
   onAccept,
   onDecline,
   onHangUp,
   onCancel,
   onToggleMute,
   onToggleCamera,
+  onStartScreenShare,
+  onStopScreenShare,
 }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+
   if (!call) return null;
+
+  function handleChooseSource(sourceId) {
+    window.electronAPI?.chooseScreenSource?.(sourceId);
+    setPickerOpen(false);
+    onStartScreenShare();
+  }
 
   if (call.status === "ringing" && call.direction === "incoming") {
     return (
@@ -122,7 +138,14 @@ export default function CallOverlay({
             position: "relative",
           }}
         >
-          {call.media === "video" && isConnected ? (
+          {remoteSharingScreen ? (
+            // The shared screen becomes the main tile regardless of whether
+            // this is an audio or video call - screen sharing was scoped to
+            // work from either, on purpose. objectFit:contain here, not
+            // cover like the camera tile below - cropping someone's screen
+            // would cut off real content, not just background.
+            <video ref={remoteScreenVideoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: 18, background: "#1c1512" }} />
+          ) : call.media === "video" && isConnected ? (
             <video ref={remoteVideoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 18 }} />
           ) : (
             <>
@@ -134,10 +157,10 @@ export default function CallOverlay({
           )}
           <audio ref={remoteAudioRef} autoPlay hidden />
 
-          {call.media === "video" && isConnected && (
+          {isConnected && (remoteSharingScreen || (call.media === "video" && !remoteSharingScreen)) && (
             <div style={{ position: "absolute", left: 14, bottom: 14, display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: 99, background: "rgba(26,21,19,0.6)" }}>
               <span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--accent)" }} />
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#f7e8dc" }}>{peerName}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#f7e8dc" }}>{remoteSharingScreen ? `${peerName}'s screen` : peerName}</span>
             </div>
           )}
 
@@ -159,6 +182,10 @@ export default function CallOverlay({
             <>
               <ControlButton label={muted ? "Unmute" : "Mute"} onClick={onToggleMute} />
               {call.media === "video" && <ControlButton label={cameraOff ? "Cam on" : "Camera"} onClick={onToggleCamera} />}
+              {/* Deliberately not gated on call.media === "video" - screen
+                  sharing works from an audio call just as well, that's the
+                  whole point of this feature. */}
+              <ControlButton label={sharingScreen ? "Stop sharing" : "Share screen"} onClick={sharingScreen ? onStopScreenShare : () => setPickerOpen(true)} active={sharingScreen} />
             </>
           )}
           <button
@@ -169,13 +196,29 @@ export default function CallOverlay({
           </button>
         </div>
       </div>
+
+      {pickerOpen && <ScreenSharePickerModal onChoose={handleChooseSource} onCancel={() => setPickerOpen(false)} />}
     </div>
   );
 }
 
-function ControlButton({ label, onClick }) {
+function ControlButton({ label, onClick, active }) {
   return (
-    <button onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 9, padding: "9px 14px", borderRadius: 14, background: "rgba(249,241,232,0.14)", border: "none", fontSize: 12.5, fontWeight: 600, color: "#f9f1e8" }}>
+    <button
+      onClick={onClick}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 9,
+        padding: "9px 14px",
+        borderRadius: 14,
+        background: active ? "var(--accent)" : "rgba(249,241,232,0.14)",
+        border: "none",
+        fontSize: 12.5,
+        fontWeight: 600,
+        color: active ? "#fff8f2" : "#f9f1e8",
+      }}
+    >
       {label}
     </button>
   );

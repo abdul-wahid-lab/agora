@@ -85,3 +85,37 @@ export async function getLocalStream(media) {
     video: media !== "video" ? false : videoDeviceId ? { deviceId: { exact: videoDeviceId } } : true,
   });
 }
+
+// Screen sharing works from an audio call just as well as a video one, by
+// design - it has nothing to do with the camera. Rather than renegotiating
+// the connection when sharing actually starts (a new SDP offer/answer round
+// trip, which would need new wire-protocol messages and new backend/
+// calling.py state to avoid colliding with the existing busy/collision
+// logic), every call - audio or video - pre-negotiates a second, empty
+// video slot right from the start (see addScreenTransceiver below). Sharing
+// later is just RTCRtpSender.replaceTrack() into that already-negotiated
+// slot: no renegotiation, no new signaling, works today's calling.py
+// completely unmodified. The receiving side finds out sharing started or
+// stopped from that track's own native mute/unmute events (a real signal
+// WebRTC already provides), not a message this app invented.
+export function addScreenTransceiver(pc) {
+  return pc.addTransceiver("video", { direction: "sendrecv" });
+}
+
+// The answering side never calls addScreenTransceiver itself - processing
+// the offer's extra video m-line auto-creates a matching transceiver on
+// this side too (standard WebRTC behavior for an m-line with no local
+// counterpart). This just finds it afterward, by a rule both the offerer
+// and answerer agree on without needing to say so out loud: transceivers
+// appear in the array in the same order their m-lines appear in the SDP on
+// both ends, and this app only ever adds camera-or-nothing first and the
+// screen slot last - so the last video-kind transceiver is always the
+// screen slot, whether there's zero or one camera transceiver before it.
+export function findScreenTransceiver(pc) {
+  const videoTransceivers = pc.getTransceivers().filter((t) => t.receiver.track.kind === "video");
+  return videoTransceivers[videoTransceivers.length - 1];
+}
+
+export async function getScreenStream() {
+  return navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+}
