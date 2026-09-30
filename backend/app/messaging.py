@@ -67,7 +67,7 @@ class MessagingService:
         self.on_message = on_message
         # Fired (peer_id, name) when a peer_id we already have a
         # trust-on-first-use key recorded for shows up with a *different*
-        # key - see get_shared_key(). Real signal worth surfacing to a
+        # key - see get_directional_keys(). Real signal worth surfacing to a
         # human, not something to silently accept or silently block.
         self.on_identity_changed = on_identity_changed
         # Lets other services (file transfer, calling) ride this same
@@ -86,11 +86,15 @@ class MessagingService:
         # this process; only the public half is ever broadcast, by
         # discovery.py, alongside peer_id/name.
         self._device_keys = store.get_or_create_device_keys()
-        # peer_id -> derived shared symmetric key (bytes). An X25519 shared
-        # secret is stable for the lifetime of both keypairs involved, so
-        # this is computed once per peer per process and reused for every
+        # peer_id -> (send_key, recv_key). An X25519 shared secret is
+        # stable for the lifetime of both keypairs involved, so this is
+        # computed once per peer per process and reused for every
         # connection to/from them after that - no per-connection handshake.
-        self._shared_keys: dict[str, bytes] = {}
+        # Two distinct directional keys, not one shared key reused both
+        # ways - see crypto_identity.derive_directional_keys for why a
+        # single symmetric key is a real, exploitable reflection attack
+        # (confirmed directly, not theoretical).
+        self._shared_keys: dict[str, tuple[bytes, bytes]] = {}
 
         # peer_id -> outbound websocket connection currently used for sending
         self._out_conns: dict[str, object] = {}
@@ -101,20 +105,21 @@ class MessagingService:
 
     # -- encryption ---------------------------------------------------------
 
-    async def get_shared_key(self, peer_id: str) -> Optional[bytes]:
-        """The one place a per-peer symmetric key is derived, cached, and
-        checked against trust-on-first-use. Returns None if this peer's
-        public key hasn't been resolved via discovery yet (nothing to
-        derive from) - callers treat that as "can't talk to this peer yet",
-        never as a reason to fall back to sending anything unencrypted.
+    async def get_directional_keys(self, peer_id: str) -> Optional[tuple[bytes, bytes]]:
+        """The one place a per-peer (send_key, recv_key) pair is derived,
+        cached, and checked against trust-on-first-use. Returns None if
+        this peer's public key hasn't been resolved via discovery yet
+        (nothing to derive from) - callers treat that as "can't talk to
+        this peer yet", never as a reason to fall back to sending anything
+        unencrypted.
 
         Known limitation: the trust-on-first-use check only runs the first
-        time this process derives a key for a given peer_id - every later
+        time this process derives keys for a given peer_id - every later
         call for that same peer_id in this same process returns the cached
-        key straight away, without re-checking. So a key that genuinely
+        keys straight away, without re-checking. So a key that genuinely
         changes mid-session (not just on this device's next restart) won't
         raise on_identity_changed until this device restarts - it'll just
-        go quiet with that peer instead, since messages encrypted with the
+        go quiet with that peer instead, since frames encrypted with the
         now-stale cached key will never decrypt on their new end either.
         Not a security hole (nothing decrypts wrong, communication just
         stops), but a real gap in how quickly the warning itself surfaces."""
@@ -127,15 +132,23 @@ class MessagingService:
         old_key = await self.store.check_and_remember_peer_key(peer_id, peer.name, peer.public_key)
         if old_key is not None and self.on_identity_changed:
             self.on_identity_changed(peer_id, peer.name)
-        shared_key = crypto_identity.derive_shared_key(self._device_keys["private_key"], peer.public_key)
-        self._shared_keys[peer_id] = shared_key
-        return shared_key
+        keys = crypto_identity.derive_directional_keys(self._device_keys["private_key"], peer.public_key, self.peer_id, peer_id)
+        self._shared_keys[peer_id] = keys
+        return keys
+
+    async def get_send_key(self, peer_id: str) -> Optional[bytes]:
+        keys = await self.get_directional_keys(peer_id)
+        return keys[0] if keys else None
+
+    async def get_recv_key(self, peer_id: str) -> Optional[bytes]:
+        keys = await self.get_directional_keys(peer_id)
+        return keys[1] if keys else None
 
     async def _encrypt_for(self, peer_id: str, message: dict) -> Optional[bytes]:
-        shared_key = await self.get_shared_key(peer_id)
-        if shared_key is None:
+        send_key = await self.get_send_key(peer_id)
+        if send_key is None:
             return None
-        return crypto_identity.encrypt(shared_key, json.dumps(message).encode())
+        return crypto_identity.encrypt(send_key, json.dumps(message).encode())
 
     # -- lifecycle -----------------------------------------------------
 
@@ -187,11 +200,11 @@ class MessagingService:
                     await ws.close()
                     return
 
-                shared_key = await self.get_shared_key(remote_peer_id)
-                if shared_key is None:
+                recv_key = await self.get_recv_key(remote_peer_id)
+                if recv_key is None:
                     continue  # this peer's public key isn't resolved yet
                 try:
-                    plaintext = crypto_identity.decrypt(shared_key, raw)
+                    plaintext = crypto_identity.decrypt(recv_key, raw)
                 except crypto_identity.DecryptionError:
                     continue  # tampered/corrupt/stale-key frame - drop, don't crash
                 msg = json.loads(plaintext)
@@ -249,11 +262,11 @@ class MessagingService:
             async for raw in conn:
                 if isinstance(raw, str):
                     continue  # this side never expects a "hello" back
-                shared_key = await self.get_shared_key(peer_id)
-                if shared_key is None:
+                recv_key = await self.get_recv_key(peer_id)
+                if recv_key is None:
                     continue
                 try:
-                    plaintext = crypto_identity.decrypt(shared_key, raw)
+                    plaintext = crypto_identity.decrypt(recv_key, raw)
                 except crypto_identity.DecryptionError:
                     continue
                 msg = json.loads(plaintext)

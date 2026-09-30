@@ -60,8 +60,8 @@ async def main() -> None:
 
     alice_store = MessageStore(str(tmp / "alice.db"))
     bob_store = MessageStore(str(tmp / "bob.db"))
-    alice_disc = PeerDiscovery(device_name="Alice", service_port=8901, peer_id="alice-crypto-test", public_key=alice_store.get_or_create_device_keys()["public_key"])
-    bob_disc = PeerDiscovery(device_name="Bob", service_port=8902, peer_id="bob-crypto-test", public_key=bob_store.get_or_create_device_keys()["public_key"])
+    alice_disc = PeerDiscovery(device_name="Alice", service_port=8901, peer_id="alice-crypto-test", public_key=alice_store.get_or_create_device_keys()["public_key"], signing_private_key=alice_store.get_or_create_device_keys()["signing_private_key"], signing_public_key=alice_store.get_or_create_device_keys()["signing_public_key"])
+    bob_disc = PeerDiscovery(device_name="Bob", service_port=8902, peer_id="bob-crypto-test", public_key=bob_store.get_or_create_device_keys()["public_key"], signing_private_key=bob_store.get_or_create_device_keys()["signing_private_key"], signing_public_key=bob_store.get_or_create_device_keys()["signing_public_key"])
 
     identity_warnings = []
     alice_msg = MessagingService(alice_disc, alice_store, on_identity_changed=lambda pid, name: identity_warnings.append((pid, name)))
@@ -126,8 +126,8 @@ async def main() -> None:
         # valid delivery of the same message.
         alice_msg._flush_task.cancel()
 
-        real_shared_key = await alice_msg.get_shared_key(bob_disc.peer_id)
-        assert real_shared_key is not None
+        real_keys = await alice_msg.get_directional_keys(bob_disc.peer_id)
+        assert real_keys is not None
 
         orig_ct_encrypt = crypto_identity.encrypt
         tamper_once = {"armed": True}
@@ -175,11 +175,11 @@ async def main() -> None:
         alice_disc.registry.upsert(
             Peer(peer_id=bob_disc.peer_id, name="Bob", address="127.0.0.1", port=bob_disc.service_port, source="mdns", public_key=impostor_public_key)
         )
-        # Force re-resolution (see get_shared_key's own documented
-        # limitation: a cached key is normally reused without re-checking
+        # Force re-resolution (see get_directional_keys's own documented
+        # limitation: cached keys are normally reused without re-checking
         # until this process restarts).
         alice_msg._shared_keys.pop(bob_disc.peer_id, None)
-        await alice_msg.get_shared_key(bob_disc.peer_id)
+        await alice_msg.get_directional_keys(bob_disc.peer_id)
 
         assert identity_warnings == [(bob_disc.peer_id, "Bob")], f"expected exactly one identity-changed warning for bob, got {identity_warnings}"
         print("TEST 4 (a real key change for an already-known peer_id fires the identity warning): PASS")
