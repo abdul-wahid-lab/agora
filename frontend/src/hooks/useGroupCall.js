@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api, connectEvents } from "../api";
-import { RTC_CONFIG, waitForIceGatheringComplete, getLocalStream, startRingtone } from "../lib/webrtc";
+import { RTC_CONFIG, waitForIceGatheringComplete, getLocalStream, startRingtone, addScreenTransceiver, findScreenTransceiver, getScreenStream } from "../lib/webrtc";
 
 // Full mesh, no SFU/relay (see backend/app/groups.py's own module docstring
 // for the full design). Mesh formation rule, applied identically on every
@@ -26,6 +26,7 @@ export function useGroupCall(selfPeerId) {
   const [incomingGroupCall, setIncomingGroupCall] = useState(null);
   const [muted, setMuted] = useState(false);
   const [cameraOff, setCameraOff] = useState(false);
+  const [sharingScreen, setSharingScreen] = useState(false);
 
   const groupCallRef = useRef(null);
   groupCallRef.current = groupCall;
@@ -35,6 +36,18 @@ export function useGroupCall(selfPeerId) {
   const callIdToPeerRef = useRef(new Map()); // call_id -> peer_id, both directions
   const localStreamRef = useRef(null);
   const videoRefs = useRef(new Map()); // peer_id -> <video> element ("local" for self)
+  // Screen sharing broadcasts to every mesh leg at once - one real capture
+  // (localScreenStreamRef), its track handed to every peer's own
+  // pre-negotiated screen transceiver via replaceTrack. See useCall.js and
+  // lib/webrtc.js for why this needs no renegotiation and no wire-protocol
+  // change even here, where "every leg" replaces "the one connection".
+  const screenTransceiversRef = useRef(new Map()); // peer_id -> RTCRtpTransceiver
+  const localScreenStreamRef = useRef(null);
+  // See useCall.js's own comment on why this is a data channel and not the
+  // screen track's mute/unmute events - real testing found mute/unmute
+  // doesn't fire reliably/promptly. One channel per mesh leg, since each
+  // leg is its own RTCPeerConnection.
+  const screenChannelsRef = useRef(new Map()); // peer_id -> RTCDataChannel
   const stopRingRef = useRef(null);
   // Legs that arrive (call_incoming) while a decision is still pending -
   // accepted all at once on Join, declined all at once on Decline.
@@ -55,7 +68,10 @@ export function useGroupCall(selfPeerId) {
   function registerVideoRef(peerId, el) {
     if (el) videoRefs.current.set(peerId, el);
     else videoRefs.current.delete(peerId);
-    const stream = peerId === "local" ? localStreamRef.current : groupCallRef.current?.participants[peerId]?.stream;
+    let stream;
+    if (peerId === "local") stream = localStreamRef.current;
+    else if (peerId.endsWith(":screen")) stream = groupCallRef.current?.participants[peerId.slice(0, -":screen".length)]?.screenStream;
+    else stream = groupCallRef.current?.participants[peerId]?.stream;
     if (el && stream) el.srcObject = stream;
   }
 
@@ -78,17 +94,49 @@ export function useGroupCall(selfPeerId) {
     callIdToPeerRef.current.clear();
     localStreamRef.current?.getTracks().forEach((t) => t.stop());
     localStreamRef.current = null;
+    localScreenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localScreenStreamRef.current = null;
+    screenTransceiversRef.current.clear();
+    for (const ch of screenChannelsRef.current.values()) ch.close();
+    screenChannelsRef.current.clear();
     videoRefs.current.clear();
     setMuted(false);
     setCameraOff(false);
+    setSharingScreen(false);
+  }
+
+  function handleScreenChannelMessage(peerId, e) {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === "screen_share_start") {
+        const pc = pcsRef.current.get(peerId);
+        const screenTrack = pc && findScreenTransceiver(pc).receiver.track;
+        const stream = screenTrack && new MediaStream([screenTrack]);
+        setParticipant(peerId, { screenStream: stream, sharingScreen: true });
+        const el = videoRefs.current.get(`${peerId}:screen`);
+        if (el && stream) el.srcObject = stream;
+      } else if (msg.type === "screen_share_stop") {
+        setParticipant(peerId, { sharingScreen: false });
+      }
+    } catch {
+      // ignore malformed frames rather than crash the call over it
+    }
   }
 
   function setupPeerConnection(peerId) {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     pc.ontrack = (e) => {
+      if (e.transceiver === findScreenTransceiver(pc)) return; // handled via the data channel, once sharing actually starts
       setParticipant(peerId, { stream: e.streams[0], status: "connected" });
       const el = videoRefs.current.get(peerId);
       if (el) el.srcObject = e.streams[0];
+    };
+    // The answering side of this leg receives the channel the offering
+    // side created this same way - never fires on whichever side actually
+    // called createDataChannel for this leg.
+    pc.ondatachannel = (e) => {
+      screenChannelsRef.current.set(peerId, e.channel);
+      e.channel.onmessage = (msg) => handleScreenChannelMessage(peerId, msg);
     };
     pc.oniceconnectionstatechange = () => {
       if (["failed", "disconnected", "closed"].includes(pc.iceConnectionState)) {
@@ -96,6 +144,17 @@ export function useGroupCall(selfPeerId) {
       }
     };
     localStreamRef.current.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current));
+    // Same ordering discipline as useCall.js: added after this device's own
+    // media tracks, so it's really the last video transceiver on every leg.
+    const screenTransceiver = addScreenTransceiver(pc);
+    screenTransceiversRef.current.set(peerId, screenTransceiver);
+    // A member who joins mid-share (their own leg negotiates after sharing
+    // already started) still needs the already-live screen track attached -
+    // the actual "you're now seeing a share in progress" signal is sent
+    // once their data channel opens, in callMember below.
+    if (localScreenStreamRef.current) {
+      screenTransceiver.sender.replaceTrack(localScreenStreamRef.current.getVideoTracks()[0]).catch(() => {});
+    }
     pcsRef.current.set(peerId, pc);
     return pc;
   }
@@ -104,6 +163,16 @@ export function useGroupCall(selfPeerId) {
     setParticipant(peerId, { status: "connecting" });
     try {
       const pc = setupPeerConnection(peerId);
+      // Only the offering side of a leg calls createDataChannel - see
+      // setupPeerConnection's ondatachannel for the answering side.
+      const channel = pc.createDataChannel("agora-screen-share");
+      channel.onmessage = (msg) => handleScreenChannelMessage(peerId, msg);
+      screenChannelsRef.current.set(peerId, channel);
+      if (localScreenStreamRef.current) {
+        // Catch a member joining mid-share up on that fact, once their
+        // channel is actually open - can't send before then.
+        channel.addEventListener("open", () => channel.send(JSON.stringify({ type: "screen_share_start" })), { once: true });
+      }
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       await waitForIceGatheringComplete(pc);
@@ -328,17 +397,53 @@ export function useGroupCall(selfPeerId) {
     setCameraOff(!track.enabled);
   }
 
+  function broadcastOnScreenChannels(payload) {
+    for (const channel of screenChannelsRef.current.values()) {
+      if (channel.readyState === "open") {
+        channel.send(JSON.stringify(payload));
+      } else {
+        channel.addEventListener("open", () => channel.readyState === "open" && channel.send(JSON.stringify(payload)), { once: true });
+      }
+    }
+  }
+
+  async function startGroupScreenShare() {
+    if (sharingScreen || screenTransceiversRef.current.size === 0) return;
+    try {
+      const stream = await getScreenStream();
+      const track = stream.getVideoTracks()[0];
+      localScreenStreamRef.current = stream;
+      await Promise.all([...screenTransceiversRef.current.values()].map((t) => t.sender.replaceTrack(track)));
+      broadcastOnScreenChannels({ type: "screen_share_start" });
+      track.onended = () => stopGroupScreenShare();
+      setSharingScreen(true);
+    } catch {
+      // NotAllowedError (picker cancelled) or similar - nothing to surface loudly
+    }
+  }
+
+  function stopGroupScreenShare() {
+    localScreenStreamRef.current?.getTracks().forEach((t) => t.stop());
+    localScreenStreamRef.current = null;
+    for (const t of screenTransceiversRef.current.values()) t.sender.replaceTrack(null).catch(() => {});
+    broadcastOnScreenChannels({ type: "screen_share_stop" });
+    setSharingScreen(false);
+  }
+
   return {
     groupCall,
     incomingGroupCall,
     muted,
     cameraOff,
+    sharingScreen,
     startGroupCall,
     joinIncomingGroupCall,
     declineIncomingGroupCall,
     hangUpGroupCall,
     toggleMute,
     toggleCamera,
+    startGroupScreenShare,
+    stopGroupScreenShare,
     registerVideoRef,
   };
 }

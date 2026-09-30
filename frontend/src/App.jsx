@@ -54,12 +54,15 @@ export default function App() {
     incomingGroupCall,
     muted: groupMuted,
     cameraOff: groupCameraOff,
+    sharingScreen: groupSharingScreen,
     startGroupCall,
     joinIncomingGroupCall,
     declineIncomingGroupCall,
     hangUpGroupCall,
     toggleMute: toggleGroupMute,
     toggleCamera: toggleGroupCamera,
+    startGroupScreenShare,
+    stopGroupScreenShare,
     registerVideoRef,
   } = useGroupCall(me?.peer_id);
   const {
@@ -68,15 +71,20 @@ export default function App() {
     elapsed,
     muted,
     cameraOff,
+    sharingScreen,
+    remoteSharingScreen,
     localVideoRef,
     remoteVideoRef,
     remoteAudioRef,
+    remoteScreenVideoRef,
     placeCall,
     acceptCall,
     declineCall,
     hangUp,
     toggleMute,
     toggleCamera,
+    startScreenShare,
+    stopScreenShare,
   } = useCall();
   const { warnings: identityWarnings, dismiss: dismissIdentityWarning } = useIdentityWarnings();
 
@@ -324,15 +332,20 @@ export default function App() {
         elapsed={elapsed}
         muted={muted}
         cameraOff={cameraOff}
+        sharingScreen={sharingScreen}
+        remoteSharingScreen={remoteSharingScreen}
         localVideoRef={localVideoRef}
         remoteVideoRef={remoteVideoRef}
         remoteAudioRef={remoteAudioRef}
+        remoteScreenVideoRef={remoteScreenVideoRef}
         onAccept={acceptCall}
         onDecline={declineCall}
         onHangUp={() => hangUp()}
         onCancel={() => hangUp()}
         onToggleMute={toggleMute}
         onToggleCamera={toggleCamera}
+        onStartScreenShare={startScreenShare}
+        onStopScreenShare={stopScreenShare}
       />
 
       <GroupCallOverlay
@@ -340,11 +353,14 @@ export default function App() {
         incomingGroupCall={incomingGroupCall}
         muted={groupMuted}
         cameraOff={groupCameraOff}
+        sharingScreen={groupSharingScreen}
         onToggleMute={toggleGroupMute}
         onToggleCamera={toggleGroupCamera}
         onHangUp={hangUpGroupCall}
         onJoin={joinIncomingGroupCall}
         onDecline={declineIncomingGroupCall}
+        onStartScreenShare={startGroupScreenShare}
+        onStopScreenShare={stopGroupScreenShare}
         registerVideoRef={registerVideoRef}
       />
 

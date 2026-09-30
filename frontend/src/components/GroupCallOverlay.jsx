@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { initials } from "../lib/avatar";
+import ScreenSharePickerModal from "./ScreenSharePickerModal";
 
 const STATUS_LABEL = {
   connecting: "Connecting…",
@@ -58,14 +60,27 @@ function IncomingGroupCallToast({ incoming, onJoin, onDecline }) {
 // dominant-speaker/spotlight layout (that needs audio-level detection this
 // first version doesn't have), just an even grid, matching how a small
 // group call actually looks with 2-5 people.
-export default function GroupCallOverlay({ groupCall, incomingGroupCall, muted, cameraOff, onToggleMute, onToggleCamera, onHangUp, onJoin, onDecline, registerVideoRef }) {
+export default function GroupCallOverlay({ groupCall, incomingGroupCall, muted, cameraOff, sharingScreen, onToggleMute, onToggleCamera, onHangUp, onJoin, onDecline, onStartScreenShare, onStopScreenShare, registerVideoRef }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+
   if (incomingGroupCall) {
     return <IncomingGroupCallToast incoming={incomingGroupCall} onJoin={onJoin} onDecline={onDecline} />;
   }
   if (!groupCall) return null;
   const { groupName, media, participants } = groupCall;
   const entries = Object.entries(participants);
-  const cols = entries.length + 1 <= 2 ? 1 : entries.length + 1 <= 4 ? 2 : 3;
+  const sharingPeers = entries.filter(([, p]) => p.sharingScreen);
+  // Screen tiles count toward the grid too, so sharing to a 3-person mesh
+  // doesn't cram a screen into the same cramped space as a face - it's
+  // real content someone specifically wants seen clearly.
+  const tileCount = entries.length + 1 + sharingPeers.length;
+  const cols = tileCount <= 2 ? 1 : tileCount <= 4 ? 2 : 3;
+
+  function handleChooseSource(sourceId) {
+    window.electronAPI?.chooseScreenSource?.(sourceId);
+    setPickerOpen(false);
+    onStartScreenShare();
+  }
 
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 900, background: "#1c1512", display: "flex", flexDirection: "column" }}>
@@ -93,6 +108,9 @@ export default function GroupCallOverlay({ groupCall, incomingGroupCall, muted, 
             faded={p.status === "unreachable" || p.status === "left"}
           />
         ))}
+        {sharingPeers.map(([peerId, p]) => (
+          <Tile key={`${peerId}:screen`} label={`${p.name}'s screen`} videoEnabled isScreen videoRef={(el) => registerVideoRef(`${peerId}:screen`, el)} />
+        ))}
       </div>
 
       <div style={{ flex: "0 0 auto", padding: "18px 26px 26px", display: "flex", justifyContent: "center", gap: 14 }}>
@@ -104,19 +122,27 @@ export default function GroupCallOverlay({ groupCall, incomingGroupCall, muted, 
             {cameraOff ? "Camera on" : "Camera off"}
           </button>
         )}
+        {/* Not gated on media === "video" - works from an audio group call too. */}
+        <button onClick={sharingScreen ? onStopScreenShare : () => setPickerOpen(true)} style={ctrlBtnStyle(sharingScreen)}>
+          {sharingScreen ? "Stop sharing" : "Share screen"}
+        </button>
         <button onClick={onHangUp} style={{ ...ctrlBtnStyle(false), background: "var(--danger)", color: "#fff" }}>
           Leave call
         </button>
       </div>
+
+      {pickerOpen && <ScreenSharePickerModal onChoose={handleChooseSource} onCancel={() => setPickerOpen(false)} />}
     </div>
   );
 }
 
-function Tile({ label, status, videoEnabled, videoRef, muted, faded }) {
+function Tile({ label, status, videoEnabled, videoRef, muted, faded, isScreen }) {
   return (
-    <div style={{ position: "relative", borderRadius: 18, background: "#2a201b", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", opacity: faded ? 0.45 : 1, minHeight: 160 }}>
+    <div style={{ position: "relative", borderRadius: 18, background: "#2a201b", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", opacity: faded ? 0.45 : 1, minHeight: 160, gridColumn: isScreen ? "span 2" : undefined }}>
       {videoEnabled ? (
-        <video ref={videoRef} autoPlay playsInline muted={muted} style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+        // A screen tile uses contain, not cover - cropping someone's real
+        // screen content is worse than the letterboxing this trades for.
+        <video ref={videoRef} autoPlay playsInline muted={muted} style={{ width: "100%", height: "100%", objectFit: isScreen ? "contain" : "cover", background: isScreen ? "#000" : undefined }} />
       ) : (
         <>
           <video ref={videoRef} autoPlay playsInline muted={muted} style={{ display: "none" }} />

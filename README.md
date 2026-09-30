@@ -197,6 +197,98 @@ sequenceDiagram
 
 Signaling (offer/answer/ICE) piggybacks on the same direct WebSocket messaging already uses; there's no separate signaling server, cloud or otherwise. Once connected, audio/video flows directly between the two devices.
 
+### Encryption
+
+There's no central server here to issue TLS certificates from - this is peer-to-peer with no authority anywhere, ever. The design that fits is the one SSH and Signal both use instead: every device has its own long-lived identity, any two devices derive a shared secret independently, and trust is built up the first time you meet someone rather than vouched for by a third party. Two separate keypairs, generated once on first run and never regenerated:
+
+| Keypair | Algorithm | Used for | Ever leaves the device? |
+|---|---|---|---|
+| Encryption identity | X25519 | Deriving the shared secret two peers encrypt with | Only the public half, broadcast via discovery |
+| Signing identity | Ed25519 | Proving a discovery announcement really came from the peer_id it claims | Only the public half, broadcast via discovery |
+
+Deliberately two separate keys, not one reused for both jobs - a Diffie-Hellman key and a signing key are different mathematical tools, and mixing their purposes is a real cryptographic engineering mistake independent of whether any specific attack exploits it.
+
+```mermaid
+flowchart TD
+    FIRST["Device's first ever launch"] --> GEN["Generate X25519 keypair\n+ Ed25519 keypair"]
+    GEN --> STORE[("device_identity table\nagora.db - private keys never leave this row")]
+    STORE --> EVERY["Every later launch"]
+    EVERY --> LOAD["Load the same two keypairs back"]
+    LOAD --> BCAST["Broadcast both PUBLIC halves\nalongside peer_id/device_name\nover mDNS + UDP"]
+```
+
+**1. Signed discovery - proving an announcement is really from who it claims.** Every mDNS TXT record and UDP broadcast packet is signed with the sender's Ed25519 key, over exactly the fields that matter (`peer_id`, `address`, `port`, encryption `public_key` - not the cosmetic device name, which can legitimately change). A receiver verifies the signature and pins the signing key to that peer_id the first time it's seen, before the announcement is ever allowed to affect the live peer list:
+
+```mermaid
+sequenceDiagram
+    participant Sender
+    participant LAN as LAN (mDNS / UDP broadcast)
+    participant Receiver
+
+    Sender->>Sender: sign_announcement(peer_id, address, port, public_key)
+    Sender->>LAN: {peer_id, address, port, public_key,<br/>signing_public_key, signature}
+    LAN->>Receiver: announcement arrives
+    Receiver->>Receiver: verify_announcement(signature) valid?
+    alt invalid or missing signature
+        Receiver->>Receiver: drop - never reaches the peer list
+    else valid signature
+        Receiver->>Receiver: check_and_pin_signing_key(peer_id, signing_public_key)
+        alt first time this peer_id has ever been seen
+            Receiver->>Receiver: pin this signing key, accept
+        else signing key matches what's already pinned
+            Receiver->>Receiver: accept
+        else signing key is DIFFERENT from what's pinned
+            Receiver->>Receiver: drop - identity conflict, not silently trusted
+        end
+    end
+```
+
+This is what actually stops a forged broadcast: an attacker can self-sign their own fake announcement with a freshly-generated keypair - the signature itself is perfectly valid - but they can't produce a signature that matches a signing key already pinned to someone else's peer_id. Confirmed by directly attacking it: a real adversarial test flooded exactly this kind of forged packet at a live device and it was rejected every time (see [Known security gaps](#security-posture-honest-as-of-now)).
+
+**2. Shared secret and directional keys - what actually encrypts a message.** Once two devices know each other's real (verified) X25519 public key, each independently computes the same shared secret with nobody ever transmitting it, then splits it into two separate keys - one for each direction:
+
+```mermaid
+flowchart LR
+    APRIV["Alice's private key"] --> DH1["X25519 exchange"]
+    BPUB["Bob's public key\n(learned via discovery)"] --> DH1
+    DH1 --> SECRET["Shared secret\n(identical on both sides,\nnever sent over the wire)"]
+    SECRET --> HKDF1["HKDF: label 'alice->bob'"]
+    SECRET --> HKDF2["HKDF: label 'bob->alice'"]
+    HKDF1 --> SENDKEY["Alice's send_key\n= Bob's recv_key"]
+    HKDF2 --> RECVKEY["Alice's recv_key\n= Bob's send_key"]
+```
+
+A single shared key used for both directions was tried first, and an actual reflection attack confirmed it was exploitable: a message Alice encrypted for Bob could be captured and bounced straight back at Alice's own connection, and she'd accept it as genuinely coming from Bob. Splitting the secret into two labelled, directional keys closes this - a blob valid in one direction can never be mistaken for the other, even between the same two devices.
+
+**3. Every real frame, encrypted and authenticated.** `"hello"` (just an identity announcement, no secret) is the only frame ever sent as plaintext; everything after it - chat messages, delivery acks, file-transfer chunks, call signaling (SDP/ICE) - is ChaCha20-Poly1305 authenticated encryption, sent as a binary WebSocket frame instead of a plaintext one:
+
+```mermaid
+sequenceDiagram
+    participant A as Alice
+    participant NET as Direct WebSocket (LAN)
+    participant B as Bob
+
+    A->>NET: "hello" {peer_id, device_name} - plaintext, no secret
+    NET->>B: hello received, remote identity known
+    A->>A: encrypt(send_key, {"type":"chat", body, ...})
+    A->>NET: binary frame: nonce + ciphertext + auth tag
+    NET->>B: binary frame arrives
+    B->>B: decrypt(recv_key, frame)
+    alt authentication fails (tampered/corrupt/wrong key)
+        B->>B: drop the frame silently - never crashes, never guesses
+    else authentication succeeds
+        B->>B: process the real message
+        B->>NET: encrypt(send_key, {"type":"ack", ...})
+        NET->>A: binary ack frame
+    end
+```
+
+Authenticated, not just confidential: a tampered or forged frame fails to decrypt and is dropped outright, rather than being accepted with corrupted content. The file-transfer TCP channel (a separate socket from the messaging WebSocket) gets the identical treatment per chunk, length-prefixed so the receiver reads exact encrypted blobs - which also closes a real gap beyond confidentiality, since that socket has no identity check of its own otherwise: without the right key, nothing a third party sends to it will ever decrypt.
+
+**4. Trust-on-first-use for the encryption key itself.** Separately from the signing-key pinning above (which protects discovery), `known_peers` also remembers a peer_id's encryption public key the first time real communication happens with them. If that key ever changes later, it's surfaced as a real, dismissible warning in the app rather than silently trusted or silently blocked - the app doesn't decide for you whether it's a genuine reinstall on their end or someone else now claiming that identity.
+
+None of this covers WebRTC call *media* (audio/video) - that path is always DTLS-SRTP encrypted by the browser/Electron engine itself, with no way to turn it off, so there was never a gap there to close. See [Security posture](#security-posture-honest-as-of-now) for what this design still doesn't protect against.
+
 ### Network communication: every port and protocol in play
 
 Nothing here is abstracted behind a magic "cloud" box. This is the literal set of sockets each device opens:
@@ -295,11 +387,12 @@ In dev mode, Electron spawns the backend via the dev virtualenv's `python.exe` d
 
 | File | Responsibility |
 |---|---|
-| `backend/app/discovery.py` | mDNS advertise/browse + UDP broadcast fallback; tracks live peers, fires `peer_joined`/`peer_left` |
-| `backend/app/messaging.py` | Direct peer-to-peer WebSocket messaging, `pending → sent → delivered` state |
-| `backend/app/filetransfer.py` | Offer/accept file transfers, chunked streaming, hash verification, resume support |
+| `backend/app/discovery.py` | mDNS advertise/browse + UDP broadcast fallback; tracks live peers, fires `peer_joined`/`peer_left`; verifies signed announcements before they reach the peer list |
+| `backend/app/crypto_identity.py` | X25519 key exchange + directional key derivation, ChaCha20-Poly1305 encrypt/decrypt, Ed25519 discovery-broadcast signing - see [Encryption](#encryption) |
+| `backend/app/messaging.py` | Direct peer-to-peer WebSocket messaging, `pending → sent → delivered` state, encrypts/decrypts every real frame |
+| `backend/app/filetransfer.py` | Offer/accept file transfers, chunked streaming (each chunk encrypted), hash verification, resume support |
 | `backend/app/calling.py` | WebRTC signaling relay over the existing WebSocket, call state/history |
-| `backend/app/storage.py` | Local SQLite persistence: messages, files, call history, all per-device |
+| `backend/app/storage.py` | Local SQLite persistence: messages, files, call history, device identity keys, pinned peer keys, all per-device |
 | `backend/app/api.py` | FastAPI wrapper (127.0.0.1-only) exposing all of the above as REST + `WS /events` for the UI |
 | `frontend/electron/main.cjs` | Electron main process: spawns the backend, opens the window, wires IPC window controls |
 | `frontend/src/` | React UI (Onboarding, Nearby, Chats, Files, Calls); talks only to the local API, never directly to other peers |
