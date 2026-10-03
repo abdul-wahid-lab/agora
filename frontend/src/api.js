@@ -24,6 +24,8 @@ async function request(path, options) {
 
 export const api = {
   me: () => request("/me"),
+  myQr: () => request("/me/qr"),
+  addScannedPeer: (payload) => request("/peers/add-scanned", { method: "POST", body: JSON.stringify(payload) }),
   peers: () => request("/peers"),
   knownPeers: () => request("/peers/known"),
   importContacts: (contacts) => request("/peers/known/import", { method: "POST", body: JSON.stringify({ contacts }) }),

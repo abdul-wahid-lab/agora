@@ -206,6 +206,28 @@ class PeerDiscovery:
         if self._udp_recv_sock:
             self._udp_recv_sock.close()
 
+    def self_announcement(self) -> dict:
+        """The same signed announcement broadcast on mDNS/UDP, computed
+        fresh on demand - backs the QR-pairing endpoint (api.py's GET
+        /me/qr) so a scanned code and a live radar hit carry the exact same
+        payload shape and go through the exact same verify_announcement +
+        check_and_pin_signing_key trust check on the other end. Not a
+        separate, weaker channel into the peer registry."""
+        local_ip = _get_local_ip()
+        payload = {
+            "peer_id": self.peer_id,
+            "device_name": self.device_name,
+            "address": local_ip,
+            "port": self.service_port,
+            "public_key": self.public_key,
+        }
+        if self.signing_private_key:
+            payload["signing_public_key"] = self.signing_public_key
+            payload["signature"] = crypto_identity.sign_announcement(
+                self.signing_private_key, self.peer_id, local_ip, self.service_port, self.public_key
+            )
+        return payload
+
     # -- mDNS ------------------------------------------------------------
 
     def _start_mdns(self) -> None:

@@ -136,6 +136,8 @@ sequenceDiagram
 
 mDNS is the primary path; UDP broadcast is the fallback for networks that filter mDNS traffic. Both are checked, so a peer only needs to be reachable by one of them to show up.
 
+**QR-code pairing** is a third way to add a peer, for when you'd rather not wait on radar: Nearby's QR button shows a code encoding this device's own signed announcement (the exact same payload broadcast over mDNS/UDP), and scanning someone else's code with the camera submits it through the identical signature-verification and key-pinning check real discovery enforces, not a separate, weaker path in.
+
 ### Messaging
 
 ```mermaid

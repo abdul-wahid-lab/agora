@@ -15,6 +15,7 @@ import SettingsScreen from "./components/SettingsScreen";
 import GroupConversationPane from "./components/GroupConversationPane";
 import GroupCallOverlay from "./components/GroupCallOverlay";
 import IdentityWarningBanner from "./components/IdentityWarningBanner";
+import QrPairingModal from "./components/QrPairingModal";
 import { api } from "./api";
 import { useCall } from "./hooks/useCall";
 import { usePeers } from "./hooks/usePeers";
@@ -36,6 +37,7 @@ export default function App() {
   // the radar view, regardless of whatever peer was last viewed there.
   const [nearbyShowingRadar, setNearbyShowingRadar] = useState(true);
   const [scanOverlayOpen, setScanOverlayOpen] = useState(false);
+  const [qrModalOpen, setQrModalOpen] = useState(false);
   const [me, setMe] = useState(null);
   const [peerCount, setPeerCount] = useState(0);
   const [connected, setConnected] = useState(false);
@@ -259,7 +261,7 @@ export default function App() {
 
         {active === "nearby" && (
           <>
-            <PeerList peers={peers} selected={selectedPeerId} onSelect={handleSelectPeer} onRescan={handleRescan} scanning={rescanning} />
+            <PeerList peers={peers} selected={selectedPeerId} onSelect={handleSelectPeer} onRescan={handleRescan} onOpenQr={() => setQrModalOpen(true)} scanning={rescanning} />
             {nearbyShowingRadar ? (
               <ScanRadar peers={peers} />
             ) : (
@@ -369,6 +371,8 @@ export default function App() {
           <ScanRadar peers={peers} />
         </div>
       )}
+
+      {qrModalOpen && <QrPairingModal onClose={() => setQrModalOpen(false)} />}
     </div>
   );
 }
