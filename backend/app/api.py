@@ -27,14 +27,15 @@ import os
 import socket
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from app import crypto_identity
 from app.calling import CallService, CallState
 from app.deletion import DeleteService
 from app.disappearing import DisappearingMessagesService
-from app.discovery import PeerDiscovery
+from app.discovery import Peer, PeerDiscovery
 from app.filetransfer import FileTransferService, IncomingFileOffer
 from app.groups import GroupService
 from app.messaging import IncomingMessage, MessagingService
@@ -330,6 +331,54 @@ async def get_me():
         # exposing it here.
         "public_key": discovery.public_key,
     }
+
+
+@app.get("/me/qr")
+async def get_my_qr():
+    """The payload this device's own QR code encodes - the exact same
+    signed announcement this device already broadcasts over mDNS/UDP (see
+    discovery.py's self_announcement). Scanning it goes through the
+    identical verify_announcement + check_and_pin_signing_key gate as a
+    live radar hit (POST /peers/add-scanned below), not a separate,
+    weaker side channel into the peer registry."""
+    return discovery.self_announcement()
+
+
+class ScannedPeerBody(BaseModel):
+    peer_id: str
+    device_name: str
+    address: str
+    port: int
+    public_key: str = ""
+    signing_public_key: str
+    signature: str
+
+
+@app.post("/peers/add-scanned")
+async def add_scanned_peer(body: ScannedPeerBody):
+    """Adds a peer from a scanned QR code. Deliberately reuses discovery's
+    own trust path rather than trusting the QR payload on sight: the same
+    Ed25519 signature check discovery.py's mDNS/UDP listeners run on every
+    announcement, and the same check_and_pin_signing_key call that rejects
+    a peer_id whose signing key doesn't match what's already pinned for it
+    - a forged QR code is no more trusted than a forged broadcast packet.
+    On success this just upserts into the live registry; _watch_peers()
+    above picks it up on its next 1.5s tick exactly like a real discovery
+    hit, including persisting it via save_known_peer and broadcasting
+    peer_joined - no separate code path for "how a QR-added peer becomes a
+    contact" to keep in sync with the normal one."""
+    if body.peer_id == discovery.peer_id:
+        raise HTTPException(400, "That's your own code.")
+    if not crypto_identity.verify_announcement(
+        body.signing_public_key, body.signature, body.peer_id, body.address, body.port, body.public_key
+    ):
+        raise HTTPException(400, "This code's signature doesn't check out.")
+    if not store.check_and_pin_signing_key(body.peer_id, body.signing_public_key):
+        raise HTTPException(409, "This peer is already known under a different identity.")
+    discovery.registry.upsert(
+        Peer(peer_id=body.peer_id, name=body.device_name, address=body.address, port=body.port, source="qr", public_key=body.public_key)
+    )
+    return {"status": "added"}
 
 
 @app.get("/peers")

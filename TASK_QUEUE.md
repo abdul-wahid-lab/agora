@@ -1115,6 +1115,24 @@ to what's actually still missing:
   back, confirmed the honest encryption-status text, the real notification
   permission text, and the real "version 0.0.0" string all actually render
   in the running app, not just in the source.
+- [ ] **Auto-update from GitHub.** Requested 2026-10-03, not started. Check
+  github.com/abdul-wahid-lab/agora for a newer release than the running
+  version and update in place, rather than a user manually downloading a
+  new installer. Real tension worth deciding deliberately before building
+  anything, not glossing over: Agora's whole positioning is that it never
+  requires or checks for internet, no server anywhere, ever - an update
+  check is reaching out to GitHub over the real internet, which is a
+  genuine exception to that if it ever happens automatically/silently in
+  the background. Leaning toward: strictly user-initiated (a "Check for
+  updates" action in Settings > About, never a background poll, never
+  anything on startup), clearly labelled as needing internet access, and
+  failing silently/offline-safe if there's no connection - but that's a
+  recommendation, not yet a decision. Also undecided: whether this uses
+  `electron-updater` (the standard pairing with `electron-builder`, which
+  this project already uses for packaging) against GitHub Releases
+  directly, and whether/how a build gets code-signed, since an
+  auto-updater silently replacing an unsigned binary is a real attack
+  surface of its own if it's ever done carelessly.
 - [ ] **Android/phone app.** Completely separate project, not started.
   Discussed stack: Flutter (Dart) for one codebase across Android/iOS,
   `nsd`/`multicast_dns` for mDNS discovery matching the desktop's `zeroconf`
@@ -1231,6 +1249,53 @@ to what's actually still missing:
   recording is saved; whether the peer being recorded is notified/consents,
   a real privacy question worth deciding deliberately rather than
   defaulting to silent).
+- [x] **QR-code peer pairing** (fixed 2026-10-03). A QR button next to
+  Rescan in [PeerList.jsx](frontend/src/components/PeerList.jsx) opens a
+  two-tab modal
+  ([QrPairingModal.jsx](frontend/src/components/QrPairingModal.jsx)):
+  "Your code" renders this device's own pairing code; "Scan a code" reads
+  another device's code with the camera and adds it directly, without
+  waiting for radar.
+
+  **Resolved the open trust-model question from when this was scoped**,
+  rather than inventing a second, weaker path into the peer registry: the
+  QR code encodes exactly the same signed announcement this device already
+  broadcasts over mDNS/UDP (peer_id, address, port, public_key,
+  signing_public_key, signature - new `PeerDiscovery.self_announcement()`
+  in [discovery.py](backend/app/discovery.py), exposed as `GET /me/qr`).
+  Scanning a code posts that same payload to a new `POST
+  /peers/add-scanned`, which runs it through the identical
+  `crypto_identity.verify_announcement` signature check and
+  `storage.py`'s `check_and_pin_signing_key` pinning that
+  `discovery.py`'s own mDNS/UDP listeners enforce on every real broadcast -
+  a forged or tampered QR code is rejected exactly like a forged broadcast
+  packet would be, and scanning your own code is explicitly refused. On
+  success it just upserts into the live `PeerRegistry`; the existing
+  `_watch_peers()` loop in [api.py](backend/app/api.py) picks it up on its
+  own next tick and persists it via `save_known_peer` and a `peer_joined`
+  broadcast exactly like a real discovery hit - no separate "how a
+  QR-added peer becomes a contact" code path to keep in sync with the
+  normal one.
+
+  **The code itself** carries an Agora logo in the center (`qrcode`'s "H"
+  error-correction level, tolerant of the ~5% of modules the logo covers),
+  drawn with a white rounded backing so it reads as one clean marker
+  rather than noise.
+
+  **Tests performed, live, not assumed**: two real separate backend
+  processes - fetched `GET /me/qr` from one, confirmed it's a real signed
+  payload; posted it to the other's `POST /peers/add-scanned` and confirmed
+  it lands in that device's real `GET /peers` and `GET /peers/known`;
+  confirmed scanning your own code is rejected (400); confirmed a payload
+  with one field changed after signing is rejected (400, signature no
+  longer verifies). Separately, a real headless-Chrome session against the
+  real UI confirmed the QR button opens the modal, the canvas renders real
+  non-blank QR pixel data fetched from the real `/me/qr` endpoint (not a
+  stub), the Scan tab starts a real camera stream without crashing, and
+  zero console errors throughout. Finally, decoded the actual rendered
+  logo-overlaid canvas with `jsQR` directly and confirmed it decodes back
+  to the exact original signed payload - the logo does not break
+  scannability.
 - [x] **Block a peer** (fixed 2026-09-29). Real backend enforcement, not a
   UI-only switch: a new `blocked_peers` table in
   [storage.py](backend/app/storage.py), checked from a single real choke
