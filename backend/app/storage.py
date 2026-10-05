@@ -274,6 +274,12 @@ class MessageStore:
             # encryption key can legitimately be re-derived/rotated
             # independently of whether its signing identity has changed.
             conn.execute("ALTER TABLE known_peers ADD COLUMN signing_public_key TEXT")
+        if "photo_hash" not in known_peers_columns:
+            # The sha256 of whatever photo this peer_id last announced
+            # having, see photos.py - lets a cached copy in photos/peers/
+            # be trusted without re-fetching it over the network on every
+            # sighting, and tells us the moment it needs refreshing instead.
+            conn.execute("ALTER TABLE known_peers ADD COLUMN photo_hash TEXT")
 
         device_identity_columns = {row[1] for row in conn.execute("PRAGMA table_info(device_identity)").fetchall()}
         if "signing_private_key" not in device_identity_columns:
@@ -426,6 +432,19 @@ class MessageStore:
             return [FileRecord(r[0], r[1], r[2], r[3], r[4], r[5], bool(r[6]), r[7], r[8], r[9], r[10]) for r in rows]
 
         return await asyncio.to_thread(self._run, _op)
+
+    async def delete_file(self, transfer_id: str) -> None:
+        """'Delete for me': removes this device's own local record of one
+        file transfer, same as delete_message. Purely local, no wire
+        protocol involved, and deliberately doesn't touch the actual bytes
+        on disk at saved_path - clearing a transfer's history entry is a
+        different, smaller action than deleting a file you've downloaded."""
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute("DELETE FROM files WHERE transfer_id = ?", (transfer_id,))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
 
     async def group_files(self, group_id: str, limit: int = 200) -> list[FileRecord]:
         """Every file sent/received as part of one group, across however
@@ -580,41 +599,74 @@ class MessageStore:
         first thread's transaction fully commits (busy_timeout below is
         what makes it wait instead of raising "database is locked")."""
 
-        conn = self._connect(isolation_level=None)
-        try:
-            conn.execute("PRAGMA busy_timeout = 5000")
-            conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute("SELECT signing_public_key FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone()
-            pinned = row[0] if row else None
-            if pinned is not None:
+        # A real 32-way-concurrent stress run found two bugs here, not one:
+        # first, that busy_timeout alone isn't always enough - under heavy
+        # enough real contention BEGIN IMMEDIATE can still raise "database
+        # is locked" even after waiting out the full timeout, so this now
+        # retries that specific error a bounded number of times instead of
+        # ever propagating a transient lock as a hard failure. Second, and
+        # worse: the original `except Exception: conn.execute("ROLLBACK")`
+        # assumed a transaction was always open by the time an exception
+        # could occur - but if BEGIN IMMEDIATE itself is what raised (the
+        # exact "database is locked" case), there is no transaction to roll
+        # back, and SQLite raises a SECOND, unrelated error ("cannot
+        # rollback - no transaction is active") that replaces the real one.
+        # That second error then propagates out of discovery.py's listener
+        # callbacks uncaught (see the hardening added there in the same
+        # investigation), which was observed to permanently kill the UDP
+        # discovery thread for the rest of the app session - a single
+        # transient lock timeout silently disabling UDP fallback forever,
+        # not a contained, recoverable failure. `in_transaction` tracks
+        # whether BEGIN IMMEDIATE actually succeeded before ever attempting
+        # a rollback.
+        attempts_left = 3
+        while True:
+            conn = self._connect(isolation_level=None)
+            in_transaction = False
+            try:
+                conn.execute("PRAGMA busy_timeout = 5000")
+                conn.execute("BEGIN IMMEDIATE")
+                in_transaction = True
+                row = conn.execute("SELECT signing_public_key FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone()
+                pinned = row[0] if row else None
+                if pinned is not None:
+                    conn.execute("COMMIT")
+                    return pinned == signing_public_key
+                # First sighting ever - pin it, still inside the same
+                # transaction the check above ran in. known_peers may or
+                # may not already have a row for this peer_id (e.g. from a
+                # contacts import, or an earlier encryption-key sighting) -
+                # upsert rather than assume either way, same pattern as
+                # check_and_remember_peer_key. Only evict to make room when
+                # this peer_id doesn't have a row at all yet - a peer
+                # already known for some other reason isn't growing the
+                # table, so there's nothing to make room for.
+                row_exists = conn.execute("SELECT 1 FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone() is not None
+                if not row_exists:
+                    self._evict_oldest_known_peers_if_full(conn, peer_id)
+                conn.execute(
+                    """
+                    INSERT INTO known_peers (peer_id, name, last_seen, signing_public_key) VALUES (?, ?, ?, ?)
+                    ON CONFLICT(peer_id) DO UPDATE SET signing_public_key = excluded.signing_public_key
+                    """,
+                    (peer_id, peer_id, time.time(), signing_public_key),
+                )
                 conn.execute("COMMIT")
-                return pinned == signing_public_key
-            # First sighting ever - pin it, still inside the same
-            # transaction the check above ran in. known_peers may or may
-            # not already have a row for this peer_id (e.g. from a
-            # contacts import, or an earlier encryption-key sighting) -
-            # upsert rather than assume either way, same pattern as
-            # check_and_remember_peer_key. Only evict to make room when
-            # this peer_id doesn't have a row at all yet - a peer already
-            # known for some other reason isn't growing the table, so
-            # there's nothing to make room for.
-            row_exists = conn.execute("SELECT 1 FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone() is not None
-            if not row_exists:
-                self._evict_oldest_known_peers_if_full(conn, peer_id)
-            conn.execute(
-                """
-                INSERT INTO known_peers (peer_id, name, last_seen, signing_public_key) VALUES (?, ?, ?, ?)
-                ON CONFLICT(peer_id) DO UPDATE SET signing_public_key = excluded.signing_public_key
-                """,
-                (peer_id, peer_id, time.time(), signing_public_key),
-            )
-            conn.execute("COMMIT")
-            return True
-        except Exception:
-            conn.execute("ROLLBACK")
-            raise
-        finally:
-            conn.close()
+                return True
+            except sqlite3.OperationalError:
+                if in_transaction:
+                    conn.execute("ROLLBACK")
+                attempts_left -= 1
+                if attempts_left <= 0:
+                    raise
+                time.sleep(0.05)
+                continue
+            except Exception:
+                if in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+            finally:
+                conn.close()
 
     async def check_and_remember_peer_key(self, peer_id: str, name: str, public_key: str, ts: Optional[float] = None) -> Optional[str]:
         """Trust-on-first-use. The first time this peer_id is ever seen (or
@@ -660,6 +712,24 @@ class MessageStore:
             return [{"peer_id": r[0], "name": r[1], "last_seen": r[2]} for r in rows]
 
         return await asyncio.to_thread(self._run, _op)
+
+    async def get_known_peer_photo_hash(self, peer_id: str) -> Optional[str]:
+        """What photo_hash this peer_id's cached photo (if any) was fetched
+        against, so a request handler can tell a fresh cache from a stale
+        one without re-reading and re-hashing the cached file itself."""
+
+        def _op(conn: sqlite3.Connection) -> Optional[str]:
+            row = conn.execute("SELECT photo_hash FROM known_peers WHERE peer_id = ?", (peer_id,)).fetchone()
+            return row[0] if row else None
+
+        return await asyncio.to_thread(self._run, _op)
+
+    async def set_known_peer_photo_hash(self, peer_id: str, photo_hash: Optional[str]) -> None:
+        def _op(conn: sqlite3.Connection):
+            conn.execute("UPDATE known_peers SET photo_hash = ? WHERE peer_id = ?", (photo_hash, peer_id))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
 
     async def block_peer(self, peer_id: str, name: str, ts: Optional[float] = None) -> None:
         ts = ts if ts is not None else time.time()

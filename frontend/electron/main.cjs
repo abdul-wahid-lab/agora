@@ -31,6 +31,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
 const { spawn } = require("node:child_process");
+const https = require("node:https");
 
 const { API_PORT, P2P_PORT } = require("./config.cjs");
 
@@ -477,6 +478,100 @@ ipcMain.handle("screen:getSources", async () => {
 
 ipcMain.on("screen:choose", (_e, sourceId) => {
   pendingScreenSourceId = sourceId;
+});
+
+// Manual "Check for Updates..." -> real download + install, not just a link
+// to the releases page. Only ever asked to fetch a GitHub release asset
+// (the renderer builds this URL from the GitHub API's own
+// browser_download_url, never from arbitrary user input), but the host is
+// still re-checked here, at the one place that actually touches the
+// filesystem and the network from a privileged process - the renderer
+// can't be trusted to have validated it correctly on its own. A download
+// redirects at least once in practice (github.com -> a signed
+// objects.githubusercontent.com URL); each hop's host must also be on the
+// allowlist, or the download is aborted rather than silently followed
+// somewhere else.
+const UPDATE_HOST_ALLOWLIST = new Set(["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com"]);
+
+function downloadToFile(url, destPath, redirectsLeft = 5) {
+  return new Promise((resolve, reject) => {
+    let host;
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      reject(new Error("invalid URL"));
+      return;
+    }
+    if (!UPDATE_HOST_ALLOWLIST.has(host)) {
+      reject(new Error(`refusing to download from untrusted host: ${host}`));
+      return;
+    }
+    https
+      .get(url, { headers: { "User-Agent": "Agora-desktop" } }, (res) => {
+        if ([301, 302, 307, 308].includes(res.statusCode) && res.headers.location && redirectsLeft > 0) {
+          res.resume();
+          downloadToFile(res.headers.location, destPath, redirectsLeft - 1).then(resolve, reject);
+          return;
+        }
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error(`download failed: HTTP ${res.statusCode}`));
+          return;
+        }
+        const file = fs.createWriteStream(destPath);
+        res.pipe(file);
+        file.on("finish", () => file.close(() => resolve(destPath)));
+        file.on("error", reject);
+      })
+      .on("error", reject);
+  });
+}
+
+ipcMain.handle("update:download", async (_e, { url, filename }) => {
+  const destPath = path.join(os.tmpdir(), filename);
+  await downloadToFile(url, destPath);
+  return destPath;
+});
+
+// Launches the downloaded installer, detached from this process, then
+// quits - the installer needs this app fully exited to replace its files
+// (an installed NSIS build) or to install fresh (if currently running
+// portable, which has nothing in Program Files for it to replace).
+ipcMain.handle("update:install", (_e, filePath) => {
+  const child = spawn(filePath, [], { detached: true, stdio: "ignore" });
+  child.unref();
+  app.quit();
+});
+
+// A second, fully offline update source: a local folder (a USB drive, a
+// shared network folder, anything reachable with zero internet) that
+// already has an installer sitting in it. No manifest file needed - the
+// version is read straight out of the filename, the same convention
+// electron-builder's own NSIS output already uses ("Agora Setup
+// 0.1.0.exe"). Real tradeoff worth being honest about: the GitHub path
+// gets its integrity from HTTPS plus the host allowlist above; a local
+// file has neither - the only trust here is that the user picked this
+// folder and this file themselves, same as trusting any program they'd
+// double-click directly.
+ipcMain.handle("update:pickFolder", async () => {
+  const result = await dialog.showOpenDialog(mainWindow, { properties: ["openDirectory"] });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
+ipcMain.handle("update:scanFolder", async (_e, folderPath) => {
+  let entries;
+  try {
+    entries = fs.readdirSync(folderPath);
+  } catch {
+    return { found: false };
+  }
+  const exeFiles = entries.filter((f) => /\.exe$/i.test(f) && /agora/i.test(f));
+  if (exeFiles.length === 0) return { found: false };
+  const preferred = exeFiles.find((f) => /setup/i.test(f)) || exeFiles[0];
+  const versionMatch = preferred.match(/(\d+\.\d+\.\d+)/);
+  if (!versionMatch) return { found: false };
+  return { found: true, version: versionMatch[1], fileName: preferred, filePath: path.join(folderPath, preferred) };
 });
 
 const gotLock = app.requestSingleInstanceLock();

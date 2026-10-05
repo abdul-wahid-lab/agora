@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { paletteFor, initials } from "../lib/avatar";
+import PeerAvatar from "./PeerAvatar";
 
 // Matches design screens 10.2/10.7 exactly: serif "Nearby" heading + Rescan
 // pill, a real search field (filters the visible peer list by name), an
@@ -104,22 +105,7 @@ export default function PeerList({ peers, selected, onSelect, onRescan, onOpenQr
                     animation: "agRing 2.6s ease-out infinite",
                   }}
                 />
-                <span
-                  style={{
-                    width: 38,
-                    height: 38,
-                    borderRadius: 99,
-                    background: bg,
-                    color: text,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: 13,
-                    fontWeight: 600,
-                  }}
-                >
-                  {initials(p.name)}
-                </span>
+                <PeerAvatar peerId={p.peer_id} name={p.name} size={38} bg={bg} text={text} fontSize={13} />
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</div>

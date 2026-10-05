@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { paletteAt, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
 import { isPeerMuted, setPeerMuted } from "../lib/mute";
+import { isAutoCheckDue, setLastCheckedAt, getUpdateRepo } from "../lib/updateSettings";
 import { useIsPeerBlocked } from "../hooks/useIsPeerBlocked";
 import DropdownMenu from "./DropdownMenu";
+import UpdatesModal from "./UpdatesModal";
 import {
   SendFileModal,
   ContactsModal,
@@ -98,12 +100,37 @@ export default function TitleBar({
   const [knownPeersData, setKnownPeersData] = useState([]);
   const [muteVersion, setMuteVersion] = useState(0);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState("");
   const [blockVersion, setBlockVersion] = useState(0);
   const isPeerBlocked = useIsPeerBlocked(selectedPeer?.peer_id, blockVersion);
 
   useEffect(() => {
     electron?.getAlwaysOnTop?.().then((v) => setAlwaysOnTop(Boolean(v)));
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Opt-in only (see UpdatesModal's own settings section) - off by default,
+  // same as every other place in this app that could reach the internet.
+  // Re-evaluates hourly against the persisted last-checked timestamp rather
+  // than keeping its own long-lived timer, so the right thing happens
+  // whether the app's been open five minutes or five days.
+  useEffect(() => {
+    async function maybeAutoCheck() {
+      const repo = getUpdateRepo();
+      if (!repo || !isAutoCheckDue()) return;
+      try {
+        const res = await fetch(`https://api.github.com/repos/${repo}/releases/latest`);
+        setLastCheckedAt(Date.now());
+        if (!res.ok) return;
+        const data = await res.json();
+        const latest = (data.tag_name || "").replace(/^v/, "");
+        const current = typeof __AGORA_VERSION__ !== "undefined" ? __AGORA_VERSION__ : "dev";
+        if (latest && latest !== current) setModal("updates");
+      } catch {
+        // silent - a background check never surfaces errors, only real news
+      }
+    }
+    maybeAutoCheck();
+    const interval = setInterval(maybeAutoCheck, 60 * 60 * 1000);
+    return () => clearInterval(interval);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (title) {
@@ -168,23 +195,8 @@ export default function TitleBar({
     setAlwaysOnTop(next);
   }
 
-  async function handleCheckUpdates() {
+  function handleCheckUpdates() {
     setModal("updates");
-    setUpdateStatus("Checking...");
-    try {
-      const res = await fetch("https://api.github.com/repos/abdul-wahid-lab/agora/releases/latest");
-      if (!res.ok) throw new Error("not found");
-      const data = await res.json();
-      const latest = (data.tag_name || "").replace(/^v/, "");
-      const current = typeof __AGORA_VERSION__ !== "undefined" ? __AGORA_VERSION__ : "dev";
-      if (latest && latest !== current) {
-        setUpdateStatus(`A newer version (${latest}) is available. You're on ${current}. Visit the GitHub releases page to download it.`);
-      } else {
-        setUpdateStatus(`You're on the latest version (${current}).`);
-      }
-    } catch {
-      setUpdateStatus("Couldn't check for updates right now (no internet, or GitHub is unreachable). Agora works fully offline either way.");
-    }
   }
 
   const avatarIndex = Number(localStorage.getItem(SELF_AVATAR_INDEX_KEY)) || 0;
@@ -326,12 +338,7 @@ export default function TitleBar({
       {modal === "mediaLinksDocs" && selectedPeer && <MediaLinksDocsModal peerId={selectedPeer.peer_id} peerName={selectedPeer.name} onClose={() => setModal(null)} />}
       {modal === "disappearing" && selectedPeer && <DisappearingMessagesModal peerId={selectedPeer.peer_id} peerName={selectedPeer.name} onClose={() => setModal(null)} />}
       {modal === "chatTheme" && selectedPeer && <ChatThemeModal peerId={selectedPeer.peer_id} onClose={() => setModal(null)} />}
-      {modal === "updates" && (
-        <ModalOverlay title="Check for Updates" onClose={() => setModal(null)} width={380}>
-          <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>{updateStatus}</div>
-          <div style={{ fontSize: 11.5, color: "var(--text-3)" }}>This is the only thing in Agora that ever talks to the internet, and only when you click this yourself - never automatic, never in the background.</div>
-        </ModalOverlay>
-      )}
+      {modal === "updates" && <UpdatesModal onClose={() => setModal(null)} />}
     </div>
   );
 }

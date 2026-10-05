@@ -1,5 +1,6 @@
 import { useState } from "react";
 import TitleBar from "./TitleBar";
+import { api } from "../api";
 import { paletteAt, AVATAR_PALETTE_SIZE, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
 import { useSelfAvatarPhoto } from "../hooks/useSelfAvatarPhoto";
 
@@ -30,11 +31,13 @@ export default function Onboarding({ onComplete }) {
       return;
     }
     setPhoto(dataUrl);
+    api.setMyPhoto(dataUrl).catch(() => {});
   }
 
   async function handleRemovePhoto() {
     await window.electronAPI.clearAvatarPhoto();
     setPhoto(null);
+    api.clearMyPhoto().catch(() => {});
   }
 
   return (

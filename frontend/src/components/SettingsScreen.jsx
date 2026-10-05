@@ -4,13 +4,15 @@ import { paletteAt, initials, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
 import { useConversations } from "../hooks/useConversations";
 import { useSelfAvatarPhoto } from "../hooks/useSelfAvatarPhoto";
 
-// Matches design screens 6.1/6.3/6.4/6.5, but NOT verbatim: the design's
-// Privacy screen claims "Encrypted, even at home" with X25519/ChaCha20
-// badges, and About claims messages travel "encrypted" - both false for
-// this app today, transport encryption is real, planned Phase 5 work (see
-// TASK_QUEUE.md), not built yet. Copying that copy here would make the app
-// lie to whoever reads it. Every toggle below is either wired to something
-// real or honestly disabled with a reason, not a decorative switch.
+// Matches design screens 6.1/6.3/6.4/6.5, but NOT verbatim where the design
+// would make this screen lie: real transport encryption shipped in Step 25
+// (see README's own Security posture section and this file's own Privacy
+// banner below), so that part of the design's copy is accurate rather than
+// aspirational now - just not copied verbatim, since the actual wording
+// here needs to stay honest as this app's real capabilities keep changing,
+// not frozen at whatever the original design mockup happened to say. Every
+// toggle below is either wired to something real or honestly disabled with
+// a reason, not a decorative switch.
 export default function SettingsScreen({ me }) {
   const [view, setView] = useState("home");
   const avatarIndex = Number(localStorage.getItem(SELF_AVATAR_INDEX_KEY)) || 0;
@@ -30,11 +32,13 @@ export default function SettingsScreen({ me }) {
       return;
     }
     setPhoto(dataUrl);
+    api.setMyPhoto(dataUrl).catch(() => {});
   }
 
   async function handleRemovePhoto() {
     await window.electronAPI.clearAvatarPhoto();
     setPhoto(null);
+    api.clearMyPhoto().catch(() => {});
   }
 
   return (
@@ -153,12 +157,15 @@ function PrivacyView({ onBack }) {
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", padding: "22px 26px", gap: 18, overflowY: "auto" }}>
       <SubHeader title="Privacy & security" onBack={onBack} />
 
-      {/* Honest status, not the design's "Encrypted, even at home" claim -
-          see README's own Security posture section for the same wording. */}
-      <div style={{ padding: 18, borderRadius: 18, background: "var(--danger-soft)", border: "1px solid var(--border-soft)", display: "flex", flexDirection: "column", gap: 8 }}>
-        <div className="serif" style={{ fontSize: 21, lineHeight: 1.15, color: "var(--danger)" }}>Not encrypted yet</div>
+      {/* Matches README's own Security posture section - kept honest in both
+          directions: this said "not encrypted yet" before real transport
+          encryption shipped, and left saying that afterward until this was
+          caught, which is exactly the kind of overclaim-by-omission this
+          section exists to avoid. */}
+      <div style={{ padding: 18, borderRadius: 18, background: "var(--surface-2)", border: "1px solid var(--border-soft)", display: "flex", flexDirection: "column", gap: 8 }}>
+        <div className="serif" style={{ fontSize: 21, lineHeight: 1.15, color: "var(--text)" }}>Encrypted on this network</div>
         <div style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.55 }}>
-          Messages and files currently travel as plain text between devices on this network, anyone else actively watching this WiFi could read them. Call audio/video is the one exception: WebRTC always encrypts that part regardless. Real end-to-end encryption for everything else is planned, not built yet.
+          Messages, files, and call signaling are end-to-end encrypted between devices (ChaCha20-Poly1305, a separate key for each direction) from the moment two devices first meet, and call audio/video is always encrypted by WebRTC regardless. The one honest limit: trust is established the first time you meet a peer, the same model SSH uses, so a brand-new contact on a genuinely hostile network still can't be verified out-of-band.
         </div>
       </div>
 

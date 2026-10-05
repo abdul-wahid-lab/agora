@@ -75,6 +75,8 @@ export default function App() {
     cameraOff,
     sharingScreen,
     remoteSharingScreen,
+    awaitingShareAccept,
+    incomingShareRequest,
     localVideoRef,
     remoteVideoRef,
     remoteAudioRef,
@@ -86,6 +88,9 @@ export default function App() {
     toggleMute,
     toggleCamera,
     startScreenShare,
+    cancelScreenShareRequest,
+    acceptScreenShareRequest,
+    declineScreenShareRequest,
     stopScreenShare,
   } = useCall();
   const { warnings: identityWarnings, dismiss: dismissIdentityWarning } = useIdentityWarnings();
@@ -336,6 +341,8 @@ export default function App() {
         cameraOff={cameraOff}
         sharingScreen={sharingScreen}
         remoteSharingScreen={remoteSharingScreen}
+        awaitingShareAccept={awaitingShareAccept}
+        incomingShareRequest={incomingShareRequest}
         localVideoRef={localVideoRef}
         remoteVideoRef={remoteVideoRef}
         remoteAudioRef={remoteAudioRef}
@@ -347,6 +354,9 @@ export default function App() {
         onToggleMute={toggleMute}
         onToggleCamera={toggleCamera}
         onStartScreenShare={startScreenShare}
+        onCancelScreenShareRequest={cancelScreenShareRequest}
+        onAcceptScreenShareRequest={acceptScreenShareRequest}
+        onDeclineScreenShareRequest={declineScreenShareRequest}
         onStopScreenShare={stopScreenShare}
       />
 

@@ -15,6 +15,13 @@ export function useCall() {
   const [cameraOff, setCameraOff] = useState(false);
   const [sharingScreen, setSharingScreen] = useState(false);
   const [remoteSharingScreen, setRemoteSharingScreen] = useState(false);
+  // Screen sharing requires the other person's explicit consent before any
+  // frame actually goes out, the same "ring for consent" principle group
+  // calling already uses for joining - awaitingShareAccept is this side's
+  // "asked, waiting on them" state; incomingShareRequest is the other
+  // side's "they're asking, show me Accept/Decline" state.
+  const [awaitingShareAccept, setAwaitingShareAccept] = useState(false);
+  const [incomingShareRequest, setIncomingShareRequest] = useState(false);
 
   const pcRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -69,6 +76,8 @@ export function useCall() {
     setCameraOff(false);
     setSharingScreen(false);
     setRemoteSharingScreen(false);
+    setAwaitingShareAccept(false);
+    setIncomingShareRequest(false);
   }
 
   useEffect(() => {
@@ -180,7 +189,15 @@ export function useCall() {
   function handleScreenChannelMessage(e) {
     try {
       const msg = JSON.parse(e.data);
-      if (msg.type === "screen_share_start") setRemoteSharingScreen(true);
+      if (msg.type === "screen_share_request") setIncomingShareRequest(true);
+      else if (msg.type === "screen_share_cancel") setIncomingShareRequest(false);
+      else if (msg.type === "screen_share_accept") {
+        setAwaitingShareAccept(false);
+        beginCapturingScreen();
+      } else if (msg.type === "screen_share_decline") {
+        setAwaitingShareAccept(false);
+        setError("They declined your screen share.");
+      } else if (msg.type === "screen_share_start") setRemoteSharingScreen(true);
       else if (msg.type === "screen_share_stop") setRemoteSharingScreen(false);
     } catch {
       // ignore malformed frames rather than crash the call over it
@@ -275,13 +292,23 @@ export function useCall() {
       const pc = setupPeerConnection(incoming.media);
       pcRef.current = pc;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
-      // Same relative order as placeCall's offer side (own media first,
-      // screen slot last) - see setupPeerConnection's own comment for why
-      // that symmetry is what makes findScreenTransceiver's "last video
-      // transceiver" rule land on the same slot for both sides.
-      screenTransceiverRef.current = addScreenTransceiver(pc);
 
       await pc.setRemoteDescription(incoming.offerSdp);
+      // The answering side never calls addScreenTransceiver itself (see
+      // findScreenTransceiver's own comment in lib/webrtc.js) - calling it
+      // here before setRemoteDescription, as this used to, pre-creates a
+      // second, separate unassociated video transceiver that real testing
+      // showed does not reliably end up being the one setRemoteDescription
+      // actually pairs with the offer's extra m-line. That left this
+      // device's "screen" sender pointed at a transceiver that was never
+      // really part of the negotiated connection: replaceTrack() on it
+      // succeeded locally with no error, "sharing" turned on in the UI, but
+      // no frame ever reached the peer - the answering side could never
+      // successfully share while the offering side always could. Finding
+      // the transceiver the offer's own extra m-line actually created,
+      // after setRemoteDescription has processed it, is what findScreenTransceiver
+      // exists for, and is guaranteed to be the real, negotiated slot.
+      screenTransceiverRef.current = findScreenTransceiver(pc);
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await waitForIceGatheringComplete(pc);
@@ -347,8 +374,35 @@ export function useCall() {
     if (channel.readyState === "open") channel.send(JSON.stringify(payload));
   }
 
+  // Asking first, not sharing first: this only tells the other side someone
+  // wants to share and waits for their explicit answer - nothing is
+  // captured yet, the same way an incoming call rings for consent before
+  // any media flows rather than connecting straight through.
   async function startScreenShare() {
-    if (!screenTransceiverRef.current || sharingScreen) return;
+    if (!screenTransceiverRef.current || sharingScreen || awaitingShareAccept) return;
+    setAwaitingShareAccept(true);
+    await sendOnScreenChannel({ type: "screen_share_request" });
+  }
+
+  function cancelScreenShareRequest() {
+    setAwaitingShareAccept(false);
+    sendOnScreenChannel({ type: "screen_share_cancel" });
+  }
+
+  function acceptScreenShareRequest() {
+    setIncomingShareRequest(false);
+    sendOnScreenChannel({ type: "screen_share_accept" });
+  }
+
+  function declineScreenShareRequest() {
+    setIncomingShareRequest(false);
+    sendOnScreenChannel({ type: "screen_share_decline" });
+  }
+
+  // Runs once the other side has actually accepted - the real capture (and
+  // the source picker that comes with it) only ever happens after consent,
+  // never before.
+  async function beginCapturingScreen() {
     try {
       const stream = await getScreenStream();
       const track = stream.getVideoTracks()[0];
@@ -364,6 +418,9 @@ export function useCall() {
       // NotAllowedError: the user cancelled the source picker, or
       // Electron's own handler declined - not a real error to surface.
       if (e.name !== "NotAllowedError") setError("Couldn't start screen sharing.");
+      // The other side already accepted and is waiting for a tile that,
+      // after a cancelled/failed picker, is now never actually coming.
+      sendOnScreenChannel({ type: "screen_share_stop" });
     }
   }
 
@@ -383,6 +440,8 @@ export function useCall() {
     cameraOff,
     sharingScreen,
     remoteSharingScreen,
+    awaitingShareAccept,
+    incomingShareRequest,
     localVideoRef,
     remoteVideoRef,
     remoteAudioRef,
@@ -394,6 +453,9 @@ export function useCall() {
     toggleMute,
     toggleCamera,
     startScreenShare,
+    cancelScreenShareRequest,
+    acceptScreenShareRequest,
+    declineScreenShareRequest,
     stopScreenShare,
   };
 }

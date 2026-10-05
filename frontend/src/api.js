@@ -48,6 +48,29 @@ export const api = {
   acceptFile: (transferId) => request(`/files/${transferId}/accept`, { method: "POST" }),
   declineFile: (transferId) => request(`/files/${transferId}/decline`, { method: "POST" }),
   resendFile: (transferId) => request(`/files/${transferId}/resend`, { method: "POST" }),
+  deleteFile: (transferId) => request(`/files/${transferId}`, { method: "DELETE" }),
+  // Not a JSON request/response like everything else here - this is a
+  // direct URL for a <video>/<audio>/<img> element's own src, so the
+  // browser's native media loader handles Range requests (seeking) itself
+  // rather than this app reading the whole file into memory first. Safe to
+  // hand to the renderer same as any other local-API URL: the backend only
+  // ever resolves it against the real saved_path on record for this exact
+  // transfer_id, never a path the frontend supplies.
+  fileRawUrl: (transferId) => `${BASE}/files/${transferId}/raw`,
+  // Pushes this device's own avatar photo to the backend so it can actually
+  // be served to a peer that asks for it (see backend/app/photos.py) - a
+  // second copy alongside the existing Electron-local one `useSelfAvatarPhoto`
+  // already manages for the UI's own fast display. Raw bytes over the wire,
+  // not JSON: `fetch()` on a data: URL (what Electron's setAvatarPhoto IPC
+  // already returns) is a real, simple way to get a Blob back out of it
+  // without hand-rolling base64 decoding here.
+  setMyPhoto: async (dataUrl) => {
+    const blob = await (await fetch(dataUrl)).blob();
+    const res = await fetch(`${BASE}/me/photo`, { method: "PUT", body: blob });
+    if (!res.ok) throw new Error(`PUT /me/photo failed: ${res.status}`);
+  },
+  clearMyPhoto: () => fetch(`${BASE}/me/photo`, { method: "DELETE" }),
+  peerPhotoUrl: (peerId) => `${BASE}/peers/${peerId}/photo`,
   callOffer: (peerId, sdp, media, groupCallId) =>
     request("/calls/offer", { method: "POST", body: JSON.stringify({ peer_id: peerId, sdp, media, group_call_id: groupCallId }) }),
   callAnswer: (callId, sdp) => request(`/calls/${callId}/answer`, { method: "POST", body: JSON.stringify({ sdp }) }),

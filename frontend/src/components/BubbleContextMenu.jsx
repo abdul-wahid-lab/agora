@@ -20,7 +20,7 @@ export function useContextMenu() {
 // candidates: [{ id, name, kind: "peer" | "group" }] or null/undefined to
 // omit the forward section entirely (nothing to forward, e.g. a file with
 // no local saved_path). onDelete omitted entirely hides the delete section
-// too (files have no delete feature at all, only messages do).
+// too (a still-live file transfer, or a message with only a synthetic id).
 export default function BubbleContextMenu({ position, onClose, candidates, onForward, onDelete, canDeleteForEveryone }) {
   const ref = useRef(null);
   const [adjusted, setAdjusted] = useState(position);

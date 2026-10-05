@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { api } from "../api";
 
 // The self-avatar photo (if any) lives on disk in Electron's userData
 // directory, managed entirely by main.cjs's profile:getAvatarPhoto/
@@ -17,7 +18,14 @@ export function useSelfAvatarPhoto() {
     if (!hasElectron) return;
     let cancelled = false;
     window.electronAPI.getAvatarPhoto().then((dataUrl) => {
-      if (!cancelled) setPhoto(dataUrl);
+      if (cancelled) return;
+      setPhoto(dataUrl);
+      // One-time bootstrap for an install that already had a photo set
+      // before the backend ever learned to serve one to peers (see
+      // backend/app/photos.py) - harmless, idempotent to repeat on every
+      // launch otherwise, since the backend just overwrites its own copy
+      // with the same bytes.
+      if (dataUrl) api.setMyPhoto(dataUrl).catch(() => {});
     });
     return () => {
       cancelled = true;

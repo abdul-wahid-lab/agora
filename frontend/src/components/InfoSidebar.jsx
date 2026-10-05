@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
 import { paletteFor, initials } from "../lib/avatar";
+import PeerAvatar from "./PeerAvatar";
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -49,9 +50,7 @@ export default function InfoSidebar({ peer, online = true }) {
       <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 9 }}>
         <span style={{ position: "relative", width: 70, height: 70 }}>
           <span style={{ position: "absolute", inset: -5, borderRadius: 99, border: "2px solid var(--accent)", animation: "agRing 2.6s ease-out infinite" }} />
-          <span style={{ width: 70, height: 70, borderRadius: 99, background: bg, color: text, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Instrument Serif, serif", fontSize: 26 }}>
-            {initials(peer.name)}
-          </span>
+          <PeerAvatar peerId={peer.peer_id} name={peer.name} size={70} bg={bg} text={text} fontSize={26} fontFamily="Instrument Serif, serif" fontWeight={400} />
         </span>
         <div className="serif" style={{ fontSize: 21, lineHeight: 1 }}>
           {peer.name}

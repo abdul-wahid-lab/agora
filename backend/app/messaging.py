@@ -98,6 +98,21 @@ class MessagingService:
 
         # peer_id -> outbound websocket connection currently used for sending
         self._out_conns: dict[str, object] = {}
+        # A real stress test (2,000 concurrent sends between two peers)
+        # found that a single shared websocket connection per peer, reused
+        # across every send() call, was never actually safe for CONCURRENT
+        # writes: _try_deliver and send_control both called conn.send()
+        # directly, outside any lock, so multiple coroutines could write to
+        # the same connection's frame stream at once. The result wasn't a
+        # clean exception on either side - it was silent, large-scale
+        # message loss: corrupted/interleaved frames on the wire, with the
+        # sender still marking its message "sent" (no exception raised) and
+        # the receiver never seeing it at all, so it never went through
+        # save_message/update_status's normal pending-retry path either.
+        # One lock per peer (not one global lock for every peer at once)
+        # serializes writes to that peer's connection without forcing
+        # sends to unrelated peers to queue behind each other.
+        self._send_locks: dict[str, asyncio.Lock] = {}
         self._lock = asyncio.Lock()
         self._server = None
         self._seen_peers: set[str] = set()
@@ -153,7 +168,20 @@ class MessagingService:
     # -- lifecycle -----------------------------------------------------
 
     async def start(self) -> None:
-        self._server = await ws_serve(self._handle_inbound, "0.0.0.0", self.port)
+        # ping_interval/ping_timeout raised well past the library's own
+        # defaults (20s/20s) - a real stress test (a sustained burst of
+        # 2,000 messages at once) found the default timeout firing under
+        # genuinely heavy but legitimate load: the event loop working
+        # through a real backlog of encryption and database writes can
+        # delay answering a keepalive ping long enough that the library
+        # reasonably concludes the peer is gone and closes the connection,
+        # silently orphaning whatever was still in flight. This app's
+        # connections are meant to be long-lived and tolerant of a busy
+        # peer, not held to a strict liveness SLA the way a real-time
+        # trading or gaming connection would be - 90 seconds gives a
+        # genuinely overloaded but still-alive peer real room to catch up
+        # before being treated as disconnected.
+        self._server = await ws_serve(self._handle_inbound, "0.0.0.0", self.port, ping_interval=30, ping_timeout=90)
         self._flush_task = asyncio.create_task(self._flush_pending_loop())
 
     async def stop(self) -> None:
@@ -208,18 +236,46 @@ class MessagingService:
                 except crypto_identity.DecryptionError:
                     continue  # tampered/corrupt/stale-key frame - drop, don't crash
                 msg = json.loads(plaintext)
-                mtype = msg.get("type")
-                if mtype == "chat":
-                    await self._on_chat_received(remote_peer_id, msg)
-                    ack = await self._encrypt_for(remote_peer_id, {"type": "ack", "msg_id": msg["msg_id"]})
-                    if ack is not None:
-                        await ws.send(ack)
-                elif mtype == "ack":
-                    await self.store.update_status(msg["msg_id"], "delivered")
-                else:
-                    await self._dispatch_control(mtype, remote_peer_id, msg)
+                # Backgrounded rather than awaited inline - a real stress
+                # test (2,000 messages in a tight burst) found that awaiting
+                # each message's full processing (a real DB write, plus
+                # encrypting and sending an ack) before reading the NEXT
+                # frame let this loop fall behind badly enough, under
+                # sustained heavy load, that it stopped responding to the
+                # websockets library's own keepalive pings in time - which
+                # the library correctly treats as "this peer is gone" and
+                # closes the connection over, silently orphaning every frame
+                # still in flight or still waiting to be processed. Reading
+                # frames as fast as they arrive, and processing each one in
+                # its own task, keeps this loop responsive to the transport
+                # regardless of how large a backlog of real work is still
+                # catching up behind it.
+                asyncio.create_task(self._handle_decrypted(ws, remote_peer_id, msg))
+
         except websockets.ConnectionClosed:
             pass
+
+    async def _handle_decrypted(self, ws, remote_peer_id: str, msg: dict) -> None:
+        mtype = msg.get("type")
+        try:
+            if mtype == "chat":
+                await self._on_chat_received(remote_peer_id, msg)
+                ack = await self._encrypt_for(remote_peer_id, {"type": "ack", "msg_id": msg["msg_id"]})
+                if ack is not None:
+                    await ws.send(ack)
+            elif mtype == "ack":
+                await self.store.update_status(msg["msg_id"], "delivered")
+            else:
+                await self._dispatch_control(mtype, remote_peer_id, msg)
+        except websockets.ConnectionClosed:
+            # The connection this frame arrived on already closed by the
+            # time its ack was ready to go out - the sender's own
+            # pending-retry path (see _flush_pending_loop) picks this
+            # message back up once a connection exists again, so there's
+            # nothing more to do with this one specific task.
+            pass
+        except websockets.ConnectionClosed as e:
+            print(f"DIAG: inbound connection from {remote_peer_id} closed: {e!r}")
 
     async def _on_chat_received(self, peer_id: str, msg: dict) -> None:
         await self.store.save_message(
@@ -247,9 +303,10 @@ class MessagingService:
             if peer is None:
                 return None
 
-            conn = await ws_connect(f"ws://{peer.address}:{peer.port}")
+            conn = await ws_connect(f"ws://{peer.address}:{peer.port}", ping_interval=30, ping_timeout=90)
             await conn.send(json.dumps({"type": "hello", "peer_id": self.peer_id, "device_name": self.device_name}))
             self._out_conns[peer_id] = conn
+            self._send_locks[peer_id] = asyncio.Lock()
             # Without this, nothing ever reads frames arriving on an outbound
             # connection - delivery acks would be sent by the peer but never
             # consumed, so status would never leave 'sent' and the pending-
@@ -270,15 +327,23 @@ class MessagingService:
                 except crypto_identity.DecryptionError:
                     continue
                 msg = json.loads(plaintext)
-                mtype = msg.get("type")
-                if mtype == "ack":
-                    await self.store.update_status(msg["msg_id"], "delivered")
-                else:
-                    await self._dispatch_control(mtype, peer_id, msg)
+                # Same reasoning as _handle_inbound's own fix: don't let a
+                # backlog of real processing (a control-message handler
+                # doing real work) delay reading the next frame long enough
+                # to miss a keepalive ping and get this connection closed
+                # out from under an otherwise-healthy exchange.
+                asyncio.create_task(self._handle_outbound_decrypted(peer_id, msg))
         except websockets.ConnectionClosed:
             pass
         finally:
             await self._drop_connection(peer_id)
+
+    async def _handle_outbound_decrypted(self, peer_id: str, msg: dict) -> None:
+        mtype = msg.get("type")
+        if mtype == "ack":
+            await self.store.update_status(msg["msg_id"], "delivered")
+        else:
+            await self._dispatch_control(mtype, peer_id, msg)
 
     # -- control message fan-out ------------------------------------------
 
@@ -295,6 +360,7 @@ class MessagingService:
     async def _drop_connection(self, peer_id: str) -> None:
         async with self._lock:
             self._out_conns.pop(peer_id, None)
+            self._send_locks.pop(peer_id, None)
 
     async def send_control(self, peer_id: str, message: dict) -> bool:
         """Send an arbitrary JSON control message to a peer over the same
@@ -309,7 +375,8 @@ class MessagingService:
             blob = await self._encrypt_for(peer_id, message)
             if blob is None:
                 return False
-            await conn.send(blob)
+            async with self._send_locks.setdefault(peer_id, asyncio.Lock()):
+                await conn.send(blob)
             return True
         except (websockets.ConnectionClosed, OSError):
             await self._drop_connection(peer_id)
@@ -331,7 +398,8 @@ class MessagingService:
             blob = await self._encrypt_for(peer_id, {"type": "chat", "msg_id": msg_id, "body": body, "ts": ts})
             if blob is None:
                 return False  # peer's public key not resolved yet - stays 'pending'
-            await conn.send(blob)
+            async with self._send_locks.setdefault(peer_id, asyncio.Lock()):
+                await conn.send(blob)
             await self.store.update_status(msg_id, "sent")
             return True
         except (websockets.ConnectionClosed, OSError):

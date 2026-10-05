@@ -37,6 +37,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
   openExternal: (url) => ipcRenderer.invoke("shell:openExternal", url),
   getScreenSources: () => ipcRenderer.invoke("screen:getSources"),
   chooseScreenSource: (sourceId) => ipcRenderer.send("screen:choose", sourceId),
+  downloadUpdate: (url, filename) => ipcRenderer.invoke("update:download", { url, filename }),
+  installUpdate: (filePath) => ipcRenderer.invoke("update:install", filePath),
+  pickUpdateFolder: () => ipcRenderer.invoke("update:pickFolder"),
+  scanUpdateFolder: (folderPath) => ipcRenderer.invoke("update:scanFolder", folderPath),
 });
 
 // Tells api.js which port main.cjs actually spawned the backend on, so the
