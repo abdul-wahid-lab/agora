@@ -144,25 +144,32 @@ export function useGroupCall(selfPeerId) {
       }
     };
     localStreamRef.current.getTracks().forEach((t) => pc.addTrack(t, localStreamRef.current));
-    // Same ordering discipline as useCall.js: added after this device's own
-    // media tracks, so it's really the last video transceiver on every leg.
-    const screenTransceiver = addScreenTransceiver(pc);
-    screenTransceiversRef.current.set(peerId, screenTransceiver);
-    // A member who joins mid-share (their own leg negotiates after sharing
-    // already started) still needs the already-live screen track attached -
-    // the actual "you're now seeing a share in progress" signal is sent
-    // once their data channel opens, in callMember below.
-    if (localScreenStreamRef.current) {
-      screenTransceiver.sender.replaceTrack(localScreenStreamRef.current.getVideoTracks()[0]).catch(() => {});
-    }
+    // Screen transceiver deliberately NOT added here - see callMember and
+    // acceptMeshLeg, which each wire it up at the right point for their own
+    // role instead (registerScreenTransceiver below).
     pcsRef.current.set(peerId, pc);
     return pc;
+  }
+
+  // A member who joins mid-share (their own leg negotiates after sharing
+  // already started) still needs the already-live screen track attached -
+  // the actual "you're now seeing a share in progress" signal is sent once
+  // their data channel opens, in callMember below.
+  function registerScreenTransceiver(peerId, transceiver) {
+    screenTransceiversRef.current.set(peerId, transceiver);
+    if (localScreenStreamRef.current) {
+      transceiver.sender.replaceTrack(localScreenStreamRef.current.getVideoTracks()[0]).catch(() => {});
+    }
   }
 
   async function callMember(peerId, media, groupCallId) {
     setParticipant(peerId, { status: "connecting" });
     try {
       const pc = setupPeerConnection(peerId);
+      // Same ordering discipline as useCall.js's placeCall: added after this
+      // device's own media tracks and before createOffer, so it's really
+      // the last video transceiver in the offer this leg sends.
+      registerScreenTransceiver(peerId, addScreenTransceiver(pc));
       // Only the offering side of a leg calls createDataChannel - see
       // setupPeerConnection's ondatachannel for the answering side.
       const channel = pc.createDataChannel("agora-screen-share");
@@ -193,6 +200,13 @@ export function useGroupCall(selfPeerId) {
     try {
       const pc = setupPeerConnection(evt.peer_id);
       await pc.setRemoteDescription(evt.sdp);
+      // See useCall.js's acceptCall for the full explanation: finding the
+      // transceiver the offer's own extra m-line just created, after
+      // setRemoteDescription, is the only way to guarantee this is the real
+      // negotiated slot - pre-creating one before setRemoteDescription (as
+      // this used to, inside the old setupPeerConnection) left the answering
+      // side of every leg unable to actually deliver its shared screen.
+      registerScreenTransceiver(evt.peer_id, findScreenTransceiver(pc));
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await waitForIceGatheringComplete(pc);

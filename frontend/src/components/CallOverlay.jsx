@@ -29,6 +29,8 @@ export default function CallOverlay({
   cameraOff,
   sharingScreen,
   remoteSharingScreen,
+  awaitingShareAccept,
+  incomingShareRequest,
   localVideoRef,
   remoteVideoRef,
   remoteAudioRef,
@@ -40,6 +42,9 @@ export default function CallOverlay({
   onToggleMute,
   onToggleCamera,
   onStartScreenShare,
+  onCancelScreenShareRequest,
+  onAcceptScreenShareRequest,
+  onDeclineScreenShareRequest,
   onStopScreenShare,
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -185,7 +190,11 @@ export default function CallOverlay({
               {/* Deliberately not gated on call.media === "video" - screen
                   sharing works from an audio call just as well, that's the
                   whole point of this feature. */}
-              <ControlButton label={sharingScreen ? "Stop sharing" : "Share screen"} onClick={sharingScreen ? onStopScreenShare : () => setPickerOpen(true)} active={sharingScreen} />
+              {awaitingShareAccept ? (
+                <ControlButton label="Waiting for them to accept…" onClick={onCancelScreenShareRequest} active />
+              ) : (
+                <ControlButton label={sharingScreen ? "Stop sharing" : "Share screen"} onClick={sharingScreen ? onStopScreenShare : () => setPickerOpen(true)} active={sharingScreen} />
+              )}
             </>
           )}
           <button
@@ -196,6 +205,38 @@ export default function CallOverlay({
           </button>
         </div>
       </div>
+
+      {/* Screen sharing needs the other person's explicit consent before any
+          frame actually goes out - same floating-toast treatment as the
+          incoming-call prompt above, just for a request arriving mid-call. */}
+      {incomingShareRequest && (
+        <div
+          style={{
+            position: "absolute",
+            top: 56,
+            right: 20,
+            width: 300,
+            borderRadius: 16,
+            background: "#2a2320",
+            boxShadow: "0 22px 50px rgba(20,14,10,0.42)",
+            padding: 14,
+            display: "flex",
+            flexDirection: "column",
+            gap: 12,
+            zIndex: 1010,
+          }}
+        >
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: "#f9f1e8" }}>{peerName} wants to share their screen</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onAcceptScreenShareRequest} style={{ flex: 1, padding: 9, borderRadius: 11, background: "#4d7a4a", color: "#fff", fontSize: 12.5, fontWeight: 700, border: "none" }}>
+              Accept
+            </button>
+            <button onClick={onDeclineScreenShareRequest} style={{ flex: 1, padding: 9, borderRadius: 11, background: "#c2352a", color: "#fff", fontSize: 12.5, fontWeight: 700, border: "none" }}>
+              Decline
+            </button>
+          </div>
+        </div>
+      )}
 
       {pickerOpen && <ScreenSharePickerModal onChoose={handleChooseSource} onCancel={() => setPickerOpen(false)} />}
     </div>

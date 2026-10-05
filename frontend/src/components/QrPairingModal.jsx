@@ -80,7 +80,13 @@ function drawCenterLogo(canvas) {
       resolve();
     };
     img.onerror = () => resolve();
-    img.src = "/logo.png";
+    // Relative path, not "/logo.png" - see TitleBar.jsx's own logo <img> for
+    // the full explanation: the packaged app loads index.html via file://,
+    // where an absolute path resolves to the filesystem root instead of the
+    // app's own folder, so the image silently fails to load and this
+    // resolves having drawn nothing - exactly how the QR code ended up with
+    // no logo in the middle in a packaged build despite working in dev.
+    img.src = "./logo.png";
   });
 }
 

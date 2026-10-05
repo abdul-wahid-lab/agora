@@ -1115,24 +1115,141 @@ to what's actually still missing:
   back, confirmed the honest encryption-status text, the real notification
   permission text, and the real "version 0.0.0" string all actually render
   in the running app, not just in the source.
-- [ ] **Auto-update from GitHub.** Requested 2026-10-03, not started. Check
-  github.com/abdul-wahid-lab/agora for a newer release than the running
-  version and update in place, rather than a user manually downloading a
-  new installer. Real tension worth deciding deliberately before building
-  anything, not glossing over: Agora's whole positioning is that it never
-  requires or checks for internet, no server anywhere, ever - an update
-  check is reaching out to GitHub over the real internet, which is a
-  genuine exception to that if it ever happens automatically/silently in
-  the background. Leaning toward: strictly user-initiated (a "Check for
-  updates" action in Settings > About, never a background poll, never
-  anything on startup), clearly labelled as needing internet access, and
-  failing silently/offline-safe if there's no connection - but that's a
-  recommendation, not yet a decision. Also undecided: whether this uses
-  `electron-updater` (the standard pairing with `electron-builder`, which
-  this project already uses for packaging) against GitHub Releases
-  directly, and whether/how a build gets code-signed, since an
-  auto-updater silently replacing an unsigned binary is a real attack
-  surface of its own if it's ever done carelessly.
+- [x] **Auto-update from GitHub** (fixed 2026-10-03). A real "Updates"
+  modal behind Help > Check for Updates
+  ([UpdatesModal.jsx](frontend/src/components/UpdatesModal.jsx)): checks a
+  GitHub repo's latest release against the running version, downloads the
+  Windows installer asset, and launches it, instead of just linking to the
+  releases page like the very first version of this menu item did.
+
+  **Resolved the internet-positioning tension by making it strictly
+  opt-in, not deciding it unilaterally**: the automatic-background-check
+  toggle in the same modal defaults to **off** - Agora still never reaches
+  the internet on its own unless a user deliberately turns this on, and
+  even then it only ever checks, it never downloads or installs without
+  an explicit click. A manual check (the menu item itself) always works
+  regardless of the toggle, same as before.
+
+  **Not hardcoded to this project's own repo** - a correction made mid-build
+  after initially wiring it straight to `abdul-wahid-lab/agora`: the user
+  wanted the repository itself to be something typed in, not assumed. The
+  modal now asks for a GitHub repository URL on first use
+  ([updateSettings.js](frontend/src/lib/updateSettings.js)'s
+  `parseGithubRepoUrl`), rejects anything that doesn't parse as a
+  `github.com/<owner>/<repo>` address immediately with no network call
+  ("That URL is wrong..."), then does a real `GET
+  /repos/{owner}/{repo}` lookup before accepting it - a syntactically
+  fine but nonexistent repo is still rejected, not just a regex match.
+  Once accepted it's remembered (localStorage) so it's never asked again
+  until "Change" is clicked.
+
+  **Download/install needs real filesystem and process access**, which a
+  sandboxed renderer doesn't have - added `update:download` and
+  `update:install` IPC handlers in
+  [main.cjs](frontend/electron/main.cjs). The download handler
+  re-validates the host itself (`github.com` /
+  `objects.githubusercontent.com`, following redirects, up to 5 hops) even
+  though the renderer only ever passes a `browser_download_url` straight
+  from the GitHub API - the privileged process doesn't trust the
+  renderer's own validation. Installing launches the downloaded installer
+  detached and quits the app, since the installer needs Agora fully
+  exited to replace its files.
+
+  **Also added release management**: a "Manage Old Releases..." section
+  lists the configured repo's releases (public, no auth needed to read)
+  with checkboxes and a delete button. Deleting a GitHub release needs a
+  token with write access to that repo - genuinely only usable by the
+  repo's own maintainer, since GitHub itself refuses the request
+  otherwise. The token lives only in this device's localStorage, entered
+  by hand, never bundled into the app or sent anywhere but directly to
+  api.github.com.
+
+  **A real bug found and fixed along the way**: this project's own repo
+  currently has zero GitHub Releases published, so `/releases/latest`
+  404s - the first version of the error handling lumped that into a
+  generic "couldn't reach GitHub" message, which is actively misleading
+  (it's not a connectivity problem at all). Fixed to detect a 404
+  specifically and say "No releases have been published on that
+  repository yet."
+
+  **Deliberately not built, and said so rather than silently skipping
+  it**: `electron-builder`'s current signing step logs "no signing info
+  identified, signing is skipped" for every build in this project - there
+  is no code-signing certificate. An auto-updater silently replacing an
+  unsigned binary is a real residual trust gap; HTTPS (GitHub's own TLS)
+  and the host allowlist above are the only integrity guarantees right
+  now, not a cryptographic signature on the binary itself. Worth revisiting
+  if/when a real signing certificate exists.
+
+  **Tests performed, live**: real headless Chrome against the real UI -
+  confirmed a fresh install with no repo configured shows the URL entry
+  screen rather than silently checking anything; confirmed a garbage
+  string is rejected instantly with no network call; confirmed a
+  syntactically-valid but real-world-nonexistent repo is rejected only
+  after an actual failed GitHub lookup (not just a regex pass); confirmed
+  a real, existing repo is accepted, persisted, and immediately carried
+  into a real check against the real GitHub API (correctly reporting "no
+  releases yet", since none exist); confirmed the repo is remembered
+  across a reload without re-asking; confirmed the auto-update toggle
+  persists; confirmed the Manage Releases section loads the real (empty)
+  release list from the real API. Not tested live: actually downloading
+  and running an installer end-to-end, since doing so would require a
+  real newer release to already exist on GitHub, which there isn't yet.
+
+  **Addendum, 2026-10-03 (same day): a second, fully offline update
+  source, and a default repo.** Two corrections after discussion with the
+  user:
+  1. The GitHub source now defaults to `abdul-wahid-lab/agora`
+     ([updateSettings.js](frontend/src/lib/updateSettings.js)'s
+     `DEFAULT_REPO`) instead of the modal opening to a blank URL-entry
+     screen on first use - a fresh install checks the company's own repo
+     immediately, with "Change" (pre-filled with the current repo, not
+     blank) still available to point it at any other repo, including
+     someone's own fork.
+  2. Added a genuinely different update source, not just another way to
+     reach GitHub: a **local folder**. A tab switcher in the same modal
+     ("GitHub" / "Local Folder") lets a user instead browse to a folder -
+     a USB drive, a shared network path, anything reachable with zero
+     internet - that already has an Agora installer in it. No manifest
+     file: the version is read straight out of the filename (new
+     `update:pickFolder`/`update:scanFolder` IPC in
+     [main.cjs](frontend/electron/main.cjs), using the exact same
+     `Agora Setup X.Y.Z.exe` naming convention `electron-builder` already
+     produces), compared against the running version with a plain
+     three-part numeric comparison
+     (`updateSettings.js`'s `isNewerVersion` - `0.0.9` correctly sorts
+     below `0.0.10`, not lexically above it), and installed directly via
+     the same `update:install` IPC the GitHub path uses, with no download
+     step since the file is already local. This is the one source that
+     actually matches Agora's "no server, ever" positioning in a way
+     GitHub structurally can't: one device on a LAN with no internet can
+     share an update file and everyone else installs from that folder.
+     Stated plainly rather than glossed over: this path has neither HTTPS
+     nor the GitHub path's host allowlist behind it - the entire trust
+     model is "the user picked this folder and file themselves," a
+     different (not worse, not better) kind of trust than the other path,
+     layered on top of the already-flagged no-code-signing gap.
+
+  A third option discussed and deliberately **not** built: a generic
+  "any URL, any website" source. Narrowed down in conversation to "a
+  GitHub repo that isn't necessarily mine" - which the existing
+  any-repo-URL support already covers, so nothing new was needed there.
+
+  **Tests performed, live**: real headless Chrome confirmed a fresh
+  install (no repo, no source-mode configured) defaults straight to
+  `github.com/abdul-wahid-lab/agora` and checks it immediately, with no
+  manual-entry screen shown first; confirmed "Change" opens pre-filled
+  with the current repo rather than blank; confirmed the Local Folder tab
+  renders and persists as the chosen mode; confirmed "Browse..." degrades
+  to a clear message rather than crashing outside Electron (no
+  `window.electronAPI` in that context). The folder-scan regex and the
+  version-comparison helper were both verified directly against the
+  project's own real `frontend/release/` output (correctly finds `Agora
+  Setup 0.0.0.exe` over the portable `Agora 0.0.0.exe`, correctly extracts
+  `0.0.0`) and against numeric edge cases (`0.0.9` vs `0.0.10`, `1.0.0` vs
+  `0.9.9`). Not tested live: an actual end-to-end folder-install, since
+  that needs a second, genuinely different installer version to test
+  against, which doesn't exist yet.
 - [ ] **Android/phone app.** Completely separate project, not started.
   Discussed stack: Flutter (Dart) for one codebase across Android/iOS,
   `nsd`/`multicast_dns` for mDNS discovery matching the desktop's `zeroconf`
@@ -1338,6 +1455,84 @@ to what's actually still missing:
     behavior, confirming a real message sent while blocked never arrives,
     then confirming delivery genuinely resumes after unblocking - all 8
     live assertions passed.
+
+## Requested in live two-person testing (2026-10-05)
+
+See BUILD_LOG.md's Steps 32-33 for full detail on everything below.
+
+- [x] **Peer avatar photos, visible to peers, cached locally, refreshed
+  when changed** (fixed 2026-10-05). Reverses a prior explicit design
+  decision (`main.cjs`'s old comment: "this never travels to other peers")
+  on direct request. New `backend/app/photos.py` (`PhotoStore` disk cache
+  + `PhotoExchange` request/response over the existing encrypted control
+  channel, same pattern as `filetransfer.py`'s offer/response), a
+  `known_peers.photo_hash` column, `PUT`/`DELETE /me/photo` and
+  `GET /peers/{peer_id}/photo` in `api.py` (cache served immediately,
+  background-refreshed when the peer is live), and a new `PeerAvatar.jsx`
+  component wired into `ConversationPane.jsx`'s header, `InfoSidebar.jsx`,
+  and `PeerList.jsx`. Deliberately does not touch the signed-discovery/
+  crypto_identity.py path at all. Tested live: `_test_photos.py`, two real
+  backend stacks over real sockets, byte-for-byte round trip verified both
+  directions, correct `None`-not-error for no photo set, correct
+  `ConnectionError`-not-hang for an unreachable peer. Not yet wired into
+  every other avatar spot in the app (`CallsScreen.jsx` history rows,
+  `GroupConversationPane.jsx` per-message avatars, `CallOverlay.jsx`/
+  `GroupCallOverlay.jsx` call tiles) - `PeerAvatar` exists and is ready to
+  drop into any of those the same way, just not done everywhere yet.
+
+- [x] **Inline video preview/playback in the chat timeline** (fixed
+  2026-10-05). New `GET /files/{transfer_id}/raw` (`api.py`, real HTTP
+  Range support via FastAPI's `FileResponse`, so a `<video>` element can
+  actually seek) and `VideoPreview.jsx`, wired into both `FileBubble` and
+  `GroupFileBubble` the same way `ImagePreview`/`isImageFile` already are.
+
+- [x] **Calls shown inline in the chat timeline** (fixed 2026-10-05, 1:1
+  only). `ConversationPane.jsx`'s existing messages+files timeline merge
+  now includes `calls` as a third kind, refetched on the `call_ended` WS
+  event, rendered via a new `CallBubble` that reuses `CallsScreen.jsx`'s
+  own `summaryLine`/`fmtDuration` (now exported). **Still open:** the
+  group-chat equivalent (`GroupConversationPane.jsx`) - a group call is
+  several per-member `CallRecord` rows (one per mesh leg) sharing a
+  `group_call_id`, and collapsing those into one meaningful timeline entry
+  when legs can have different outcomes (some joined, some missed) is a
+  real aggregation design question, not a quick copy-paste of the 1:1
+  version.
+
+- [ ] **Screen-share consent for group calls.** Step 32 added a real
+  accept/decline handshake before any frame is sent, but only for 1:1
+  calls (`useCall.js`). Group calls (`useGroupCall.js`) still share
+  instantly with no prompt. Extending the same `screen_share_request`/
+  `accept`/`decline` pattern to a mesh call means deciding what "consent"
+  means with more than one other participant - everyone must accept
+  before sharing starts, or each participant's own leg independently
+  decides whether to receive it - a real design choice, not just more
+  wiring of the same mechanism.
+
+- [ ] **Group-call UI redesign for more participants, and reusing the
+  same treatment for screen sharing.** A reference mockup was shared
+  directly in chat during this session (not saved anywhere in the repo -
+  ask for it again when this is picked up): a richer `GroupCallOverlay`
+  showing an "IN THIS CALL · N" participant list with per-person mic-
+  activity indicators, a mesh-topology readout (link count, bitrate,
+  "relay: none, all local"), an active-speaker label, and the existing
+  menu-bar-tray style extended to show live transfer status - explicitly
+  requested both for scaling past the current small-grid layout and for
+  how a shared screen is presented within a group call. This is a real
+  visual design project of its own, not a quick change.
+
+- [ ] **A real, live click-through test of the update button**, not just
+  the direct logic tests Step 33 ran. A real `Agora Setup 0.0.1.exe` (and
+  the original `0.0.0` one) already exist in `frontend/release/`, and a
+  demo folder with just the 0.0.1 installer in it is sitting in this
+  session's scratchpad - every attempt to launch the packaged app from
+  the automated tool environment itself exited before `main.cjs` ever
+  logged a line, while the exact same portable build's own `main.log`
+  shows it running fine for the real user on this same machine in real
+  sessions. Needs an actual human (or a properly set up Playwright/CDP
+  harness, which this project doesn't have yet) to open Settings →
+  Updates → Local Folder → Browse to that folder → confirm "0.0.1 found"
+  → Install Now, and confirm the real installer launches and the app
+  quits itself.
 
 ## Smaller known gaps (from earlier phases, still true)
 

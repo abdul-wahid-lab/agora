@@ -3,7 +3,7 @@ import { api } from "../api";
 import { usePeers } from "../hooks/usePeers";
 import { paletteFor, initials } from "../lib/avatar";
 
-function fmtDuration(seconds) {
+export function fmtDuration(seconds) {
   if (seconds == null) return null;
   const m = Math.floor(seconds / 60);
   const s = Math.round(seconds % 60);
@@ -20,7 +20,7 @@ function fmtWhen(ts) {
   return d.toLocaleDateString([], { weekday: "short" });
 }
 
-function summaryLine(call) {
+export function summaryLine(call) {
   const media = call.media === "video" ? "Video" : "Audio";
   if (call.status === "missed") return call.direction === "incoming" ? `Missed ${media.toLowerCase()} call` : `${media} · no answer`;
   if (call.status === "declined") return `${media} · declined`;

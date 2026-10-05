@@ -12,6 +12,7 @@ peer_id, so callers never need to know which transport found it.
 from __future__ import annotations
 
 import json
+import logging
 import socket
 import threading
 import time
@@ -106,42 +107,58 @@ class _MdnsListener(ServiceListener):
             self._registry.remove(peer_id)
 
     def _handle(self, zc: Zeroconf, type_: str, name: str) -> None:
-        info = zc.get_service_info(type_, name)
-        if info is None or not info.addresses:
-            return
-        props = {k.decode(): v.decode() for k, v in info.properties.items()}
-        peer_id = props.get("peer_id", name.split(".")[0])
-        if peer_id == self._self_peer_id:
-            return
-        address = socket.inet_ntoa(info.addresses[0])
-        port = info.port or 0
-        public_key = props.get("public_key", "")
-        # Signature verification (see crypto_identity.py's signed-broadcast
-        # section, and the module docstring's Phase 5b) - an announcement
-        # missing a signature, or one that doesn't verify, or one whose
-        # signing key conflicts with what's already pinned for this
-        # peer_id, is dropped outright rather than ever reaching the live
-        # registry. Not optional/best-effort: a forged mDNS/UDP packet is
-        # exactly how a real, confirmed attack redirected an established
-        # peer_id's traffic before this existed.
-        signing_public_key = props.get("signing_public_key", "")
-        signature = props.get("signature", "")
-        if not signing_public_key or not signature:
-            return
-        if not crypto_identity.verify_announcement(signing_public_key, signature, peer_id, address, port, public_key):
-            return
-        if self._on_verify_signing_key and not self._on_verify_signing_key(peer_id, signing_public_key):
-            return
-        self._registry.upsert(
-            Peer(
-                peer_id=peer_id,
-                name=props.get("device_name", name),
-                address=address,
-                port=port,
-                source="mdns",
-                public_key=public_key,
+        # The whole body is deliberately one try/except: a real 32-way
+        # concurrent stress run found that an exception from
+        # on_verify_signing_key (a transient SQLite lock, at the time - see
+        # storage.py's own fix) propagating out of here is not a contained
+        # failure. zeroconf's ServiceBrowser dispatches add_service/
+        # update_service from its own internal thread, and nothing
+        # upstream of this method is guaranteed to catch an unexpected
+        # exception and keep that thread alive - relying on a third-party
+        # library's internal exception handling as the only safety net
+        # here would be a real single point of failure for one of this
+        # app's two discovery paths. One malformed/unlucky announcement
+        # dropping is correct and silent; the whole mDNS listener dying
+        # for the rest of the session is not.
+        try:
+            info = zc.get_service_info(type_, name)
+            if info is None or not info.addresses:
+                return
+            props = {k.decode(): v.decode() for k, v in info.properties.items()}
+            peer_id = props.get("peer_id", name.split(".")[0])
+            if peer_id == self._self_peer_id:
+                return
+            address = socket.inet_ntoa(info.addresses[0])
+            port = info.port or 0
+            public_key = props.get("public_key", "")
+            # Signature verification (see crypto_identity.py's signed-broadcast
+            # section, and the module docstring's Phase 5b) - an announcement
+            # missing a signature, or one that doesn't verify, or one whose
+            # signing key conflicts with what's already pinned for this
+            # peer_id, is dropped outright rather than ever reaching the live
+            # registry. Not optional/best-effort: a forged mDNS/UDP packet is
+            # exactly how a real, confirmed attack redirected an established
+            # peer_id's traffic before this existed.
+            signing_public_key = props.get("signing_public_key", "")
+            signature = props.get("signature", "")
+            if not signing_public_key or not signature:
+                return
+            if not crypto_identity.verify_announcement(signing_public_key, signature, peer_id, address, port, public_key):
+                return
+            if self._on_verify_signing_key and not self._on_verify_signing_key(peer_id, signing_public_key):
+                return
+            self._registry.upsert(
+                Peer(
+                    peer_id=peer_id,
+                    name=props.get("device_name", name),
+                    address=address,
+                    port=port,
+                    source="mdns",
+                    public_key=public_key,
+                )
             )
-        )
+        except Exception:
+            logging.getLogger(__name__).exception("mDNS announcement from %s dropped due to an unexpected error", name)
 
 
 class PeerDiscovery:
@@ -325,6 +342,19 @@ class PeerDiscovery:
                     )
                 )
             except (KeyError, ValueError, UnicodeDecodeError):
+                continue
+            except Exception:
+                # Broadened beyond the three expected parsing errors above
+                # after a real 32-way concurrent stress run found this
+                # exact gap: on_verify_signing_key raising an unexpected
+                # error (a transient SQLite lock, at the time) propagated
+                # straight out of this loop body, past this narrower
+                # except, and with no try/except around the `while` loop
+                # itself, killed this entire listener thread - silently
+                # disabling UDP discovery fallback for the rest of the app
+                # session after a single transient failure. One bad
+                # announcement should be dropped, not the whole thread.
+                logging.getLogger(__name__).exception("UDP announcement dropped due to an unexpected error")
                 continue
 
     # -- housekeeping ------------------------------------------------------

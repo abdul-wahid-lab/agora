@@ -6,11 +6,14 @@ import { useIsPeerBlocked } from "../hooks/useIsPeerBlocked";
 import SecurityGate from "./SecurityGate";
 import FileOpenActions from "./FileOpenActions";
 import ImagePreview from "./ImagePreview";
-import { isImageFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
+import VideoPreview from "./VideoPreview";
+import PeerAvatar from "./PeerAvatar";
+import { isImageFile, isVideoFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
 import { usePeers } from "../hooks/usePeers";
 import { useGroups } from "../hooks/useGroups";
 import { useConversations } from "../hooks/useConversations";
 import BubbleContextMenu, { useContextMenu } from "./BubbleContextMenu";
+import { summaryLine as callSummaryLine } from "./CallsScreen";
 
 function statusGlyph(status) {
   if (status === "delivered" || status === "received") return "✓✓";
@@ -37,6 +40,7 @@ function dayLabel(ts) {
 export default function ConversationPane({ peer, online = true, onOpenCall, emptyState, searchOpen = false, onCloseSearch }) {
   const [messages, setMessages] = useState([]);
   const [files, setFiles] = useState([]);
+  const [calls, setCalls] = useState([]);
   const [progressByTransfer, setProgressByTransfer] = useState({});
   const [draft, setDraft] = useState("");
   const [filePickerOpen, setFilePickerOpen] = useState(false);
@@ -59,10 +63,11 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
     let cancelled = false;
     async function load() {
       try {
-        const [msgs, fls] = await Promise.all([api.history(peer.peer_id), api.files(peer.peer_id)]);
+        const [msgs, fls, cls] = await Promise.all([api.history(peer.peer_id), api.files(peer.peer_id), api.callHistory(peer.peer_id)]);
         if (!cancelled) {
           setMessages(msgs);
           setFiles(fls);
+          setCalls(cls);
         }
       } catch {
         // ignore - next poll retries
@@ -94,13 +99,20 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
       if ((evt.type === "file_offer" || evt.type === "file_status") && current) {
         api.files(current).then(setFiles).catch(() => {});
       }
+      // call_ended doesn't carry a peer_id (see api.py's _broadcast call),
+      // so this refetches regardless of whose call it actually was - cheap,
+      // and still correct, just occasionally one unnecessary request for a
+      // call that belonged to a different open conversation.
+      if (evt.type === "call_ended" && current) {
+        api.callHistory(current).then(setCalls).catch(() => {});
+      }
     });
     return stop;
   }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, files]);
+  }, [messages, files, calls]);
 
   if (!peer) {
     if (emptyState) return emptyState;
@@ -151,6 +163,14 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   function handleDeleteMessage(msg, everyone = false) {
     setMessages((prev) => prev.filter((m) => m.msg_id !== msg.msg_id));
     api.deleteMessage(msg.msg_id, { everyone, peerId: peer.peer_id }).catch(() => {});
+  }
+
+  // Same optimistic-removal shape as handleDeleteMessage above, scoped to
+  // one file transfer's history entry - see storage.py's delete_file for
+  // why this never touches the downloaded bytes themselves.
+  function handleDeleteFile(file) {
+    setFiles((prev) => prev.filter((f) => f.transfer_id !== file.transfer_id));
+    api.deleteFile(file.transfer_id).catch(() => {});
   }
 
   // Anyone this device has ever talked to or can currently see, excluding
@@ -245,8 +265,14 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   const timeline = [
     ...messages.map((m) => ({ kind: "message", ts: m.ts, data: m })),
     ...files.map((f) => ({ kind: "file", ts: f.ts, data: f })),
+    ...calls.map((c) => ({ kind: "call", ts: c.started_at, data: c })),
   ]
-    .filter((item) => !query || (item.kind === "message" ? item.data.body.toLowerCase().includes(query) : item.data.filename.toLowerCase().includes(query)))
+    .filter((item) => {
+      if (!query) return true;
+      if (item.kind === "message") return item.data.body.toLowerCase().includes(query);
+      if (item.kind === "file") return item.data.filename.toLowerCase().includes(query);
+      return false; // a call has no text of its own for a search query to match against
+    })
     .sort((a, b) => a.ts - b.ts);
 
   let lastDay = null;
@@ -256,17 +282,17 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
       <div style={{ flex: "0 0 auto", height: 62, borderBottom: "1px solid var(--divider)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 13, padding: "0 20px" }}>
         <span style={{ position: "relative", width: 38, height: 38, flexShrink: 0 }}>
           <span style={{ position: "absolute", inset: -3, borderRadius: 99, border: "2px solid var(--accent)", animation: "agRing 2.6s ease-out infinite" }} />
-          <span style={{ width: 38, height: 38, borderRadius: 99, background: bg, color: text, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 600 }}>
-            {initials(peer.name)}
-          </span>
+          <PeerAvatar peerId={peer.peer_id} name={peer.name} size={38} bg={bg} text={text} fontSize={13} />
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontWeight: 600, fontSize: 15.5 }}>{peer.name}</div>
           <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <span style={{ width: 6, height: 6, borderRadius: 99, background: online ? "var(--accent)" : "var(--text-3)" }} />
-            {/* NOT "encrypted" - the P2P WebSocket is plain ws://, no
-                transport encryption exists yet (see BUILD_LOG's Security
-                posture section). Don't claim a protection that isn't real. */}
+            {/* Peer-to-peer traffic really is end-to-end encrypted now (see
+                README's own Security posture section) - this line is just
+                describing the connection topology (direct, no server),
+                deliberately not claiming encryption here since that's not
+                what this specific line is about either way. */}
             <span style={{ fontSize: 12, color: "var(--text-2)", fontWeight: 500 }}>
               {online ? "On this network · direct, device-to-device" : "Not on this network right now · showing saved history"}
             </span>
@@ -331,8 +357,9 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
           const day = dayLabel(item.ts);
           const showDay = day !== lastDay;
           lastDay = day;
+          const key = item.kind === "message" ? item.data.msg_id : item.kind === "file" ? item.data.transfer_id : item.data.call_id;
           return (
-            <div key={item.kind === "message" ? item.data.msg_id : item.data.transfer_id} style={{ display: "flex", flexDirection: "column", gap: 11 }}>
+            <div key={key} style={{ display: "flex", flexDirection: "column", gap: 11 }}>
               {showDay && (
                 <div style={{ alignSelf: "center", font: '500 10.5px/1 "IBM Plex Mono", monospace', color: "var(--text-3)", padding: "5px 11px", borderRadius: 99, background: "var(--surface-2)" }}>
                   {day}
@@ -347,16 +374,19 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
                   onForward={(target) => handleForwardMessage(item.data, target)}
                   theme={chatTheme}
                 />
-              ) : (
+              ) : item.kind === "file" ? (
                 <FileBubble
                   file={item.data}
                   progress={progressByTransfer[item.data.transfer_id]}
                   onAccept={() => handleAcceptClick(item.data)}
                   onDecline={() => handleDeclineClick(item.data)}
                   onRetry={() => handleRetryClick(item.data)}
+                  onDelete={() => handleDeleteFile(item.data)}
                   forwardCandidates={forwardCandidates}
                   onForward={(target) => handleForwardFile(item.data, target)}
                 />
+              ) : (
+                <CallBubble call={item.data} onCallBack={() => onOpenCall(peer.peer_id, item.data.media)} />
               )}
             </div>
           );
@@ -475,6 +505,24 @@ const pillButtonStyle = {
   color: "var(--text-strong)",
 };
 
+// A call's history entry shown inline in the timeline itself, not just the
+// separate Calls tab - a small centered system-style pill, the same visual
+// language as the day-separator above it, reusing CallsScreen's own
+// summaryLine/fmtDuration so the wording always matches what the Calls tab
+// says about the exact same call.
+function CallBubble({ call, onCallBack }) {
+  return (
+    <div style={{ alignSelf: "center", display: "flex", alignItems: "center", gap: 8, padding: "7px 14px", borderRadius: 99, background: "var(--surface-2)" }}>
+      <span style={{ fontSize: 12, color: "var(--text-2)" }}>
+        {call.direction === "outgoing" ? "↗" : "↙"} {callSummaryLine(call)}
+      </span>
+      <button onClick={onCallBack} style={{ fontSize: 12, fontWeight: 600, color: "var(--accent)", background: "none", border: "none", padding: 0 }}>
+        Call back
+      </button>
+    </div>
+  );
+}
+
 function MessageBubble({ msg, onRetry, onDelete, forwardCandidates, onForward, theme }) {
   const sent = msg.direction === "sent";
   const failed = msg.status === "failed";
@@ -535,12 +583,17 @@ function MessageBubble({ msg, onRetry, onDelete, forwardCandidates, onForward, t
   );
 }
 
-function FileBubble({ file, progress, onAccept, onDecline, onRetry, forwardCandidates, onForward }) {
+function FileBubble({ file, progress, onAccept, onDecline, onRetry, onDelete, forwardCandidates, onForward }) {
   const sent = file.direction === "sent";
   const { bg, text } = extStyle(file.filename);
   const isExecutable = EXECUTABLE_EXTS.has((file.filename.split(".").pop() || "").toLowerCase());
   const inProgress = file.status === "transferring" || file.status === "accepted";
   const pending = !sent && file.status === "awaiting_accept";
+  // Deleting a transfer that's still live would just reappear on the next
+  // status poll (save_file does an INSERT OR REPLACE keyed on transfer_id,
+  // same as a message's synthetic-id guard in MessageBubble above) - only
+  // offered once the transfer has actually reached a terminal state.
+  const canDelete = Boolean(onDelete) && !inProgress && !pending;
   // Resend only exists for outgoing transfers (see filetransfer.py's
   // resend(): it raises if direction isn't "sent"), so a failed received
   // file has no retry path from this side, only the sender can retry.
@@ -551,6 +604,8 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, forwardCandi
   const canForward = !sent && file.status === "completed" && Boolean(file.saved_path);
   const [imagePreviewFailed, setImagePreviewFailed] = useState(false);
   const showImagePreview = isImageFile(file.filename) && Boolean(file.saved_path) && !imagePreviewFailed;
+  const [videoPreviewFailed, setVideoPreviewFailed] = useState(false);
+  const showVideoPreview = isVideoFile(file.filename) && Boolean(file.saved_path) && !videoPreviewFailed;
   const { menuPosition, openContextMenu, closeContextMenu } = useContextMenu();
 
   if (sent && inProgress) {
@@ -581,8 +636,8 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, forwardCandi
   return (
     <div style={{ maxWidth: "58%", alignSelf: sent ? "flex-end" : "flex-start" }}>
       <div
-        onContextMenu={canForward ? openContextMenu : undefined}
-        title={canForward ? "Right-click to forward" : undefined}
+        onContextMenu={canForward || canDelete ? openContextMenu : undefined}
+        title={canForward || canDelete ? "Right-click for delete/forward" : undefined}
         style={{
           padding: "11px 13px",
           borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
@@ -600,6 +655,13 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, forwardCandi
         {showImagePreview ? (
           <>
             <ImagePreview filePath={file.saved_path} filename={file.filename} onFail={() => setImagePreviewFailed(true)} />
+            <div className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              {file.filename} · {formatSize(file.size)}
+            </div>
+          </>
+        ) : showVideoPreview ? (
+          <>
+            <VideoPreview transferId={file.transfer_id} filename={file.filename} onFail={() => setVideoPreviewFailed(true)} />
             <div className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
               {file.filename} · {formatSize(file.size)}
             </div>
@@ -643,7 +705,19 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, forwardCandi
           </div>
         )}
       </div>
-      {canForward && <BubbleContextMenu position={menuPosition} onClose={closeContextMenu} candidates={forwardCandidates} onForward={onForward} />}
+      {(canForward || canDelete) && (
+        <BubbleContextMenu
+          position={menuPosition}
+          onClose={closeContextMenu}
+          candidates={canForward ? forwardCandidates : null}
+          onForward={onForward}
+          onDelete={canDelete ? onDelete : undefined}
+          // No wire-protocol concept of "delete for everyone" for a file
+          // transfer the way there is for a text message - this is always
+          // just a delete-for-me history entry, on either side.
+          canDeleteForEveryone={false}
+        />
+      )}
     </div>
   );
 }

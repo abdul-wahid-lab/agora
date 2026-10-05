@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { api, connectEvents } from "../api";
 import { initials } from "../lib/avatar";
-import { isImageFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
+import { isImageFile, isVideoFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
 import SecurityGate from "./SecurityGate";
 import FileOpenActions from "./FileOpenActions";
 import ImagePreview from "./ImagePreview";
+import VideoPreview from "./VideoPreview";
 import BubbleContextMenu, { useContextMenu } from "./BubbleContextMenu";
 
 // Must match backend/app/groups.py's MAX_GROUP_CALL_MEMBERS - kept here as
@@ -174,6 +175,17 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
     Promise.all(failedTransferIds.map((id) => api.resendFile(id).catch(() => {}))).then(refreshFiles);
   }
 
+  // A sent file fanned out to the group collapses into one aggregate row
+  // (see file.recipients) backed by one real transfer_id per member -
+  // deleting it deletes this device's own history entry for every one of
+  // those, same delete-for-me semantics as ConversationPane's own
+  // handleDeleteFile, just fanned out the same way sending already was.
+  function handleDeleteFile(file) {
+    const transferIds = file.recipients ? file.recipients.map((r) => r.transfer_id) : [file.transfer_id];
+    setFiles((prev) => prev.filter((f) => f.transfer_id !== file.transfer_id));
+    Promise.all(transferIds.map((id) => api.deleteFile(id).catch(() => {})));
+  }
+
   function handleDeleteMessage(msg, everyone) {
     setMessages((prev) => prev.filter((m) => m.msg_id !== msg.msg_id));
     api.deleteGroupMessage(group.group_id, msg.msg_id, { everyone }).catch(() => {});
@@ -305,6 +317,7 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
                   onAccept={() => handleAcceptClick(item.data)}
                   onDecline={() => handleDeclineClick(item.data)}
                   onRetry={() => handleRetryClick(item.data)}
+                  onDelete={() => handleDeleteFile(item.data)}
                   forwardCandidates={forwardCandidates}
                   onForward={(target) => handleForwardFile(item.data, target)}
                 />
@@ -414,11 +427,15 @@ function AttachMenuItem({ label, onClick }) {
   );
 }
 
-function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, forwardCandidates, onForward }) {
+function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, onDelete, forwardCandidates, onForward }) {
   const sent = file.direction === "sent";
   const { bg, text } = extStyle(file.filename);
   const isExecutable = EXECUTABLE_EXTS.has((file.filename.split(".").pop() || "").toLowerCase());
   const pending = !sent && file.status === "awaiting_accept";
+  const inProgress = file.status === "transferring" || file.status === "accepted";
+  // Same terminal-state restriction as ConversationPane's own FileBubble -
+  // deleting a still-live transfer would just reappear on the next poll.
+  const canDelete = Boolean(onDelete) && !inProgress && !pending;
   const recipients = file.recipients || null; // only present on a collapsed sent-aggregate
   const failedCount = recipients ? recipients.filter((r) => r.status === "failed").length : file.status === "failed" ? 1 : 0;
   const completedCount = recipients ? recipients.filter((r) => r.status === "completed").length : file.status === "completed" ? 1 : 0;
@@ -428,6 +445,8 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, forwa
   // Electron, oversized file) falls back to the generic icon row instead of
   // leaving a blank gap where the thumbnail should be.
   const showImage = !sent && isImageFile(file.filename) && Boolean(file.saved_path) && !imagePreviewFailed;
+  const [videoPreviewFailed, setVideoPreviewFailed] = useState(false);
+  const showVideo = !sent && isVideoFile(file.filename) && Boolean(file.saved_path) && !videoPreviewFailed;
   // Same restriction as ConversationPane's own canForward: only a received,
   // completed file has a real local saved_path to re-send from.
   const canForward = !sent && file.status === "completed" && Boolean(file.saved_path);
@@ -437,8 +456,8 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, forwa
     <div style={{ maxWidth: "58%", alignSelf: sent ? "flex-end" : "flex-start", display: "flex", flexDirection: "column", gap: 4 }}>
       <div style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-3)", paddingLeft: 2, textAlign: sent ? "right" : "left" }}>{senderName}</div>
       <div
-        onContextMenu={canForward ? openContextMenu : undefined}
-        title={canForward ? "Right-click to forward" : undefined}
+        onContextMenu={canForward || canDelete ? openContextMenu : undefined}
+        title={canForward || canDelete ? "Right-click for delete/forward" : undefined}
         style={{
           padding: "11px 13px",
           borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
@@ -452,6 +471,13 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, forwa
         {showImage ? (
           <>
             <ImagePreview filePath={file.saved_path} filename={file.filename} onFail={() => setImagePreviewFailed(true)} />
+            <div className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              {file.filename} · {formatSize(file.size)}
+            </div>
+          </>
+        ) : showVideo ? (
+          <>
+            <VideoPreview transferId={file.transfer_id} filename={file.filename} onFail={() => setVideoPreviewFailed(true)} />
             <div className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
               {file.filename} · {formatSize(file.size)}
             </div>
@@ -495,7 +521,16 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, forwa
           </div>
         )}
       </div>
-      {canForward && <BubbleContextMenu position={menuPosition} onClose={closeContextMenu} candidates={forwardCandidates} onForward={onForward} />}
+      {(canForward || canDelete) && (
+        <BubbleContextMenu
+          position={menuPosition}
+          onClose={closeContextMenu}
+          candidates={canForward ? forwardCandidates : null}
+          onForward={onForward}
+          onDelete={canDelete ? onDelete : undefined}
+          canDeleteForEveryone={false}
+        />
+      )}
     </div>
   );
 }

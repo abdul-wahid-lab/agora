@@ -5,6 +5,13 @@ export function isImageFile(filename) {
   return IMAGE_EXTS.has(ext);
 }
 
+const VIDEO_EXTS = new Set(["mp4", "mov", "mkv", "webm", "avi"]);
+
+export function isVideoFile(filename) {
+  const ext = (filename.split(".").pop() || "").toLowerCase();
+  return VIDEO_EXTS.has(ext);
+}
+
 export const EXECUTABLE_EXTS = new Set(["apk", "exe", "msi", "bat", "cmd", "com", "sh", "jar", "appimage", "ps1"]);
 
 export function isExecutableFile(filename) {

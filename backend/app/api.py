@@ -23,12 +23,14 @@ they must be different, and API_PORT should also just match whatever
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import socket
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 from app import crypto_identity
@@ -39,6 +41,7 @@ from app.discovery import Peer, PeerDiscovery
 from app.filetransfer import FileTransferService, IncomingFileOffer
 from app.groups import GroupService
 from app.messaging import IncomingMessage, MessagingService
+from app.photos import PhotoExchange, PhotoStore
 from app.storage import MessageStore
 
 NAME = os.environ.get("AGORA_NAME", socket.gethostname())
@@ -265,6 +268,8 @@ group_service = GroupService(
     on_group_call_start=_on_group_call_start,
     on_group_delete=_on_group_delete,
 )
+photo_store = PhotoStore(os.path.dirname(os.path.abspath(DB_PATH)))
+photo_exchange = PhotoExchange(messaging, photo_store)
 
 _peer_watch_task: Optional[asyncio.Task] = None
 
@@ -331,6 +336,74 @@ async def get_me():
         # exposing it here.
         "public_key": discovery.public_key,
     }
+
+
+@app.put("/me/photo")
+async def set_my_photo(request: Request):
+    """Pushes this device's current avatar photo to the backend so it can
+    actually be served to a peer that asks for it (see photos.py) - the
+    frontend's own `useSelfAvatarPhoto` hook still keeps its existing,
+    separate Electron-local copy for the UI's own fast display; this is
+    that same image, additionally handed to the one process that actually
+    talks to other peers. Raw bytes, not JSON/base64 - this can be a real
+    photo-sized payload and there's no reason to pay base64's ~33% size
+    inflation for a request this app makes to itself over loopback."""
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "empty photo")
+    photo_store.set_self_photo(data)
+    return {"status": "ok"}
+
+
+@app.delete("/me/photo")
+async def clear_my_photo():
+    photo_store.clear_self_photo()
+    return {"status": "cleared"}
+
+
+@app.get("/peers/{peer_id}/photo")
+async def get_peer_photo(peer_id: str):
+    """Serves a peer's avatar photo, cached to disk after the first real
+    fetch so later views cost nothing - see photos.py's own module
+    docstring for the full design. A cached copy is always served
+    immediately if one exists (even if possibly stale); a background
+    refresh is kicked off alongside it whenever the peer is currently live,
+    so the *next* view reflects a changed photo without this view having to
+    wait on a round trip first."""
+    is_live = any(p.peer_id == peer_id for p in discovery.registry.list())
+    cached = photo_store.get_peer_photo(peer_id)
+    if cached is not None:
+        if is_live:
+            asyncio.create_task(_refresh_peer_photo(peer_id))
+        return Response(content=cached, media_type="image/jpeg")
+
+    if not is_live:
+        raise HTTPException(404, "no photo cached and peer isn't reachable to ask")
+    try:
+        data = await photo_exchange.fetch(peer_id)
+    except (ConnectionError, asyncio.TimeoutError):
+        raise HTTPException(404, "peer didn't respond")
+    if data is None:
+        raise HTTPException(404, "peer has no photo set")
+    new_hash = photo_store.set_peer_photo(peer_id, data)
+    await store.set_known_peer_photo_hash(peer_id, new_hash)
+    return Response(content=data, media_type="image/jpeg")
+
+
+async def _refresh_peer_photo(peer_id: str) -> None:
+    try:
+        data = await photo_exchange.fetch(peer_id)
+    except (ConnectionError, asyncio.TimeoutError):
+        return
+    if data is None:
+        photo_store.clear_peer_photo(peer_id)
+        await store.set_known_peer_photo_hash(peer_id, None)
+        return
+    new_hash = hashlib.sha256(data).hexdigest()
+    old_hash = await store.get_known_peer_photo_hash(peer_id)
+    if new_hash != old_hash:
+        photo_store.set_peer_photo(peer_id, data)
+        await store.set_known_peer_photo_hash(peer_id, new_hash)
 
 
 @app.get("/me/qr")
@@ -674,6 +747,34 @@ async def decline_file(transfer_id: str):
 async def resend_file(transfer_id: str):
     asyncio.create_task(file_transfer.resend(transfer_id))
     return {"status": "resending"}
+
+
+@app.get("/files/{transfer_id}/raw")
+async def get_file_raw(transfer_id: str):
+    """Streams a completed, downloaded file's actual bytes, for a <video>/
+    <audio> element's own src rather than reading the whole file into this
+    app's memory first the way ImagePreview's data: URI approach does -
+    deliberately different from that approach, since a video can be large
+    enough that base64-inflating the whole thing into one data: URI (and
+    holding it all in memory at once) stops being practical the way it
+    still is for a photo. FileResponse natively serves HTTP Range requests,
+    which is what actually lets a <video> element seek without downloading
+    the whole file up front. The path served is always saved_path exactly
+    as this device's own filetransfer.py already wrote it for this exact
+    transfer_id - never a path the caller supplies."""
+    record = await store.get_file(transfer_id)
+    if record is None or not record.saved_path or not os.path.isfile(record.saved_path):
+        raise HTTPException(404, "no such file")
+    return FileResponse(record.saved_path, filename=record.filename)
+
+
+@app.delete("/files/{transfer_id}")
+async def delete_file(transfer_id: str):
+    """Plain 'delete for me', same as delete_message: removes only this
+    device's own history entry for the transfer, nothing goes over the
+    wire and the downloaded bytes on disk (if any) are left alone."""
+    await store.delete_file(transfer_id)
+    return {"status": "deleted"}
 
 
 # -- calling -----------------------------------------------------------------
