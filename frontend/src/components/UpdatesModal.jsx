@@ -3,6 +3,8 @@ import { ModalOverlay } from "./TitleBarModals";
 import {
   getAutoUpdateEnabled,
   setAutoUpdateEnabled,
+  getAutoInstallEnabled,
+  setAutoInstallEnabled,
   getCheckIntervalDays,
   setCheckIntervalDays,
   setLastCheckedAt,
@@ -97,6 +99,7 @@ function GithubSource() {
   const [progress, setProgress] = useState("");
   const [downloadedPath, setDownloadedPath] = useState(null);
   const [autoEnabled, setAutoEnabled] = useState(getAutoUpdateEnabled());
+  const [autoInstallEnabled, setAutoInstallEnabledState] = useState(getAutoInstallEnabled());
   const [intervalDays, setIntervalDays] = useState(getCheckIntervalDays());
   const [manageOpen, setManageOpen] = useState(false);
 
@@ -213,6 +216,18 @@ function GithubSource() {
   function handleToggleAuto(checked) {
     setAutoEnabled(checked);
     setAutoUpdateEnabled(checked);
+    // Auto-install only ever means anything alongside auto-check - turning
+    // check off while leaving install "on" underneath would be a setting
+    // with no real effect, silently misleading about what's actually armed.
+    if (!checked && autoInstallEnabled) {
+      setAutoInstallEnabledState(false);
+      setAutoInstallEnabled(false);
+    }
+  }
+
+  function handleToggleAutoInstall(checked) {
+    setAutoInstallEnabledState(checked);
+    setAutoInstallEnabled(checked);
   }
 
   function handleIntervalChange(days) {
@@ -308,19 +323,32 @@ function GithubSource() {
         </label>
         <div style={{ fontSize: 11.5, color: "var(--text-muted)", lineHeight: 1.5 }}>
           Off by default - Agora never reaches the internet on its own otherwise, for anything. Turning this on means it will
-          periodically contact the repository above to check your version, on its own, while the app is open. It never
-          downloads or installs anything without you confirming.
+          periodically contact the repository above to check your version, on its own, while the app is open.
+          {!autoInstallEnabled && " It never downloads or installs anything without you confirming."}
         </div>
         {autoEnabled && (
-          <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13 }}>
-            Check every
-            <select value={intervalDays} onChange={(e) => handleIntervalChange(Number(e.target.value))} style={{ padding: "4px 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)" }}>
-              <option value={1}>day</option>
-              <option value={3}>3 days</option>
-              <option value={7}>week</option>
-              <option value={30}>month</option>
-            </select>
-          </label>
+          <>
+            <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13 }}>
+              Check every
+              <select value={intervalDays} onChange={(e) => handleIntervalChange(Number(e.target.value))} style={{ padding: "4px 8px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--surface)" }}>
+                <option value={1}>day</option>
+                <option value={3}>3 days</option>
+                <option value={7}>week</option>
+                <option value={30}>month</option>
+              </select>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 9, fontSize: 13 }}>
+              <input type="checkbox" checked={autoInstallEnabled} onChange={(e) => handleToggleAutoInstall(e.target.checked)} disabled={!electron?.downloadUpdate} />
+              Also install automatically when a newer version is found
+            </label>
+            <div style={{ fontSize: 11.5, color: "var(--text-muted)", lineHeight: 1.5 }}>
+              {electron?.downloadUpdate
+                ? autoInstallEnabled
+                  ? "A real step further than just checking: once a newer version is actually found, it downloads and installs itself with no click needed, and Agora restarts on its own. A brief notice appears first so it's never a surprise."
+                  : "Leave this off to keep deciding yourself every time, even with automatic checking on."
+                : "Installing automatically only works in the desktop app, not this plain-browser dev view."}
+            </div>
+          </>
         )}
       </div>
 

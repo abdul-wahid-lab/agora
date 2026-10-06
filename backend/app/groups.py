@@ -213,7 +213,7 @@ class GroupService:
             if not sent:
                 await self.store.save_pending_group_delete(msg_id, m.peer_id, group_id)
 
-    async def send_group_file(self, group_id: str, file_path: str) -> list[str]:
+    async def send_group_file(self, group_id: str, file_path: str, keep_sender_copy: bool = False) -> list[str]:
         """Sends a file to every other member as its own completely normal
         1:1 transfer (own transfer_id, own accept/decline, own resume-on-
         drop, all of filetransfer.py's existing machinery untouched), just
@@ -231,7 +231,7 @@ class GroupService:
             if m.peer_id == self.self_peer_id:
                 continue
             try:
-                transfer_ids.append(await self.file_transfer.send_file(m.peer_id, file_path, group_id=group_id))
+                transfer_ids.append(await self.file_transfer.send_file(m.peer_id, file_path, group_id=group_id, keep_sender_copy=keep_sender_copy))
             except ConnectionError:
                 pass  # that member is unreachable right now - filetransfer.py's own flush loop will retry
         return transfer_ids

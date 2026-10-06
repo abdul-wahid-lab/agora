@@ -42,6 +42,11 @@ export function useGroupCall(selfPeerId) {
   // lib/webrtc.js for why this needs no renegotiation and no wire-protocol
   // change even here, where "every leg" replaces "the one connection".
   const screenTransceiversRef = useRef(new Map()); // peer_id -> RTCRtpTransceiver
+  // peer_id -> the real, negotiated mid of that leg's screen transceiver -
+  // see useCall.js's own screenMidRef for the full reasoning (matching by
+  // transceiver creation order didn't hold up reliably in real testing;
+  // mid is the one value both ends of a leg are guaranteed to agree on).
+  const screenMidsRef = useRef(new Map());
   const localScreenStreamRef = useRef(null);
   // See useCall.js's own comment on why this is a data channel and not the
   // screen track's mute/unmute events - real testing found mute/unmute
@@ -97,6 +102,7 @@ export function useGroupCall(selfPeerId) {
     localScreenStreamRef.current?.getTracks().forEach((t) => t.stop());
     localScreenStreamRef.current = null;
     screenTransceiversRef.current.clear();
+    screenMidsRef.current.clear();
     for (const ch of screenChannelsRef.current.values()) ch.close();
     screenChannelsRef.current.clear();
     videoRefs.current.clear();
@@ -110,7 +116,9 @@ export function useGroupCall(selfPeerId) {
       const msg = JSON.parse(e.data);
       if (msg.type === "screen_share_start") {
         const pc = pcsRef.current.get(peerId);
-        const screenTrack = pc && findScreenTransceiver(pc).receiver.track;
+        const screenMid = screenMidsRef.current.get(peerId);
+        const transceiver = pc && (screenMid != null ? pc.getTransceivers().find((t) => t.mid === screenMid) : findScreenTransceiver(pc));
+        const screenTrack = transceiver?.receiver.track;
         const stream = screenTrack && new MediaStream([screenTrack]);
         setParticipant(peerId, { screenStream: stream, sharingScreen: true });
         const el = videoRefs.current.get(`${peerId}:screen`);
@@ -126,7 +134,10 @@ export function useGroupCall(selfPeerId) {
   function setupPeerConnection(peerId) {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     pc.ontrack = (e) => {
-      if (e.transceiver === findScreenTransceiver(pc)) return; // handled via the data channel, once sharing actually starts
+      // Matched by mid (screenMidsRef) when this leg has one, not inferred
+      // by transceiver position - see screenMidsRef's own comment.
+      const screenMid = screenMidsRef.current.get(peerId);
+      if (screenMid != null ? e.transceiver.mid === screenMid : e.transceiver === findScreenTransceiver(pc)) return; // handled via the data channel, once sharing actually starts
       setParticipant(peerId, { stream: e.streams[0], status: "connected" });
       const el = videoRefs.current.get(peerId);
       if (el) el.srcObject = e.streams[0];
@@ -182,8 +193,12 @@ export function useGroupCall(selfPeerId) {
       }
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      // Sent explicitly to this leg's peer below, the same reasoning as
+      // useCall.js's own screenMidRef - mid is only assigned once a local
+      // description is actually set.
+      screenMidsRef.current.set(peerId, screenTransceiversRef.current.get(peerId)?.mid ?? null);
       await waitForIceGatheringComplete(pc);
-      const res = await api.callOffer(peerId, pc.localDescription.toJSON(), media, groupCallId);
+      const res = await api.callOffer(peerId, { ...pc.localDescription.toJSON(), screenMid: screenMidsRef.current.get(peerId) }, media, groupCallId);
       if (res.status === "failed") {
         setParticipant(peerId, { status: "unreachable" });
         return;
@@ -199,14 +214,27 @@ export function useGroupCall(selfPeerId) {
     setParticipant(evt.peer_id, { status: "connecting" });
     try {
       const pc = setupPeerConnection(evt.peer_id);
-      await pc.setRemoteDescription(evt.sdp);
-      // See useCall.js's acceptCall for the full explanation: finding the
-      // transceiver the offer's own extra m-line just created, after
-      // setRemoteDescription, is the only way to guarantee this is the real
-      // negotiated slot - pre-creating one before setRemoteDescription (as
-      // this used to, inside the old setupPeerConnection) left the answering
-      // side of every leg unable to actually deliver its shared screen.
-      registerScreenTransceiver(evt.peer_id, findScreenTransceiver(pc));
+      // Stored before setRemoteDescription runs, not after - ontrack can
+      // fire as part of processing the remote offer itself, below, so this
+      // needs to already be correct by then. See useCall.js's acceptCall
+      // for the full explanation of why mid, sent explicitly by whoever
+      // offered this leg, replaces inferring the screen slot by transceiver
+      // creation order: that inference is what left the answering side of
+      // every leg unable to actually deliver its shared screen (found
+      // showing the camera feed, or nothing, in real two-person testing).
+      screenMidsRef.current.set(evt.peer_id, evt.sdp?.screenMid ?? null);
+      await pc.setRemoteDescription({ type: evt.sdp.type, sdp: evt.sdp.sdp });
+      const screenMid = screenMidsRef.current.get(evt.peer_id);
+      const screenTransceiver = screenMid != null ? pc.getTransceivers().find((t) => t.mid === screenMid) : findScreenTransceiver(pc);
+      registerScreenTransceiver(evt.peer_id, screenTransceiver);
+      // The real bug (see useCall.js's acceptCall for the full trace that
+      // found it): this leg's screen m-line has no local track queued up
+      // before setRemoteDescription, so the browser auto-creates its
+      // transceiver as "recvonly" rather than "sendrecv" - a recvonly
+      // sender silently never transmits no matter what replaceTrack() puts
+      // on it later. Flipping it back before this leg's own answer is
+      // created fixes it with no renegotiation.
+      if (screenTransceiver) screenTransceiver.direction = "sendrecv";
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await waitForIceGatheringComplete(pc);
@@ -423,6 +451,17 @@ export function useGroupCall(selfPeerId) {
 
   async function startGroupScreenShare() {
     if (sharingScreen || screenTransceiversRef.current.size === 0) return;
+    // Group calls deliberately cap this at one sharer at a time, unlike a
+    // 1:1 call (which allows both sides at once) - a mesh call already
+    // sends N-1 real copies of whatever you share, one per other member,
+    // so a second person sharing at the same time doubles that real WiFi
+    // cost for everyone on the call, not just the two sharers. Anyone can
+    // share, in turn, the moment the current sharer stops - this is a
+    // purely local check (no central authority to ask in a mesh), so a
+    // genuine same-instant double-start from two members is possible in
+    // principle but not worth more than this for how rarely it'd happen.
+    const someoneElseSharing = Object.values(groupCallRef.current?.participants || {}).some((p) => p.sharingScreen);
+    if (someoneElseSharing) return;
     try {
       const stream = await getScreenStream();
       const track = stream.getVideoTracks()[0];

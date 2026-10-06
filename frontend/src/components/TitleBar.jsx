@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 import { paletteAt, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
 import { isPeerMuted, setPeerMuted } from "../lib/mute";
-import { isAutoCheckDue, setLastCheckedAt, getUpdateRepo } from "../lib/updateSettings";
+import { isAutoCheckDue, setLastCheckedAt, getUpdateRepo, getAutoInstallEnabled } from "../lib/updateSettings";
 import { useIsPeerBlocked } from "../hooks/useIsPeerBlocked";
 import DropdownMenu from "./DropdownMenu";
 import UpdatesModal from "./UpdatesModal";
@@ -94,6 +94,9 @@ export default function TitleBar({
   onFilterCallsByPeer,
   sidebarVisible = true,
   onToggleSidebar,
+  leftPanelVisible = true,
+  onToggleLeftPanel,
+  onToggleFocus,
 }) {
   const electron = typeof window !== "undefined" ? window.electronAPI : null;
   const [modal, setModal] = useState(null); // "sendFile" | "contacts" | "deviceInfo" | "knownPeers" | "diagnostics" | "shortcuts" | "updates" | null
@@ -106,6 +109,8 @@ export default function TitleBar({
   useEffect(() => {
     electron?.getAlwaysOnTop?.().then((v) => setAlwaysOnTop(Boolean(v)));
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const [autoInstallStatus, setAutoInstallStatus] = useState(null); // "downloading" | "installing" | null
 
   // Opt-in only (see UpdatesModal's own settings section) - off by default,
   // same as every other place in this app that could reach the internet.
@@ -123,9 +128,32 @@ export default function TitleBar({
         const data = await res.json();
         const latest = (data.tag_name || "").replace(/^v/, "");
         const current = typeof __AGORA_VERSION__ !== "undefined" ? __AGORA_VERSION__ : "dev";
-        if (latest && latest !== current) setModal("updates");
+        if (!latest || latest === current) return;
+
+        // Automatically check is one thing; automatically install and
+        // restart the app with no click at all is a meaningfully bigger
+        // thing to opt into, so it's a second, separate setting - off even
+        // when auto-check is on, unless explicitly turned on too.
+        const asset = electron?.downloadUpdate && getAutoInstallEnabled()
+          ? data.assets?.find((a) => /setup/i.test(a.name) && a.name.endsWith(".exe")) || data.assets?.find((a) => a.name.endsWith(".exe"))
+          : null;
+        if (!asset) {
+          setModal("updates");
+          return;
+        }
+        setAutoInstallStatus("downloading");
+        const downloadedPath = await electron.downloadUpdate(asset.browser_download_url, asset.name);
+        setAutoInstallStatus("installing");
+        // A brief, real pause rather than installing the instant the
+        // download finishes - this is still fully automatic (no click
+        // anywhere in this path), just not so abrupt that the window
+        // vanishes the same instant a progress indicator would have
+        // appeared, since the install step quits the app itself.
+        await new Promise((resolve) => setTimeout(resolve, 2500));
+        await electron.installUpdate(downloadedPath);
       } catch {
         // silent - a background check never surfaces errors, only real news
+        setAutoInstallStatus(null);
       }
     }
     maybeAutoCheck();
@@ -294,7 +322,9 @@ export default function TitleBar({
     { label: "Calls", onClick: () => onSelectTab("calls"), shortcut: "Ctrl+3", checked: active === "calls" },
     { label: "Files", onClick: () => onSelectTab("files"), shortcut: "Ctrl+4", checked: active === "files" },
     "divider",
+    { label: "Toggle Left Panel", onClick: onToggleLeftPanel, checked: leftPanelVisible },
     { label: "Toggle Sidebar", onClick: onToggleSidebar, checked: sidebarVisible },
+    { label: "Focus Mode (hide both panels)", onClick: onToggleFocus, checked: !leftPanelVisible && !sidebarVisible },
     "divider",
     { label: "Zoom In", onClick: () => electron?.zoomIn?.(), shortcut: "Ctrl+=", disabled: !electron, disabledReason: "Only available in the desktop app" },
     { label: "Zoom Out", onClick: () => electron?.zoomOut?.(), shortcut: "Ctrl+-", disabled: !electron, disabledReason: "Only available in the desktop app" },
@@ -327,7 +357,26 @@ export default function TitleBar({
         <DropdownMenu label="Help" items={helpItems} />
       </div>
 
-      <RightCluster electron={electron} showStatus={showStatus} connected={connected} peerCount={peerCount} />
+      <RightCluster
+        electron={electron}
+        showStatus={showStatus}
+        connected={connected}
+        peerCount={peerCount}
+        leftPanelVisible={leftPanelVisible}
+        onToggleLeftPanel={onToggleLeftPanel}
+        sidebarVisible={sidebarVisible}
+        onToggleFocus={onToggleFocus}
+        onToggleSidebar={onToggleSidebar}
+        // Nearby/Chats are the only tabs that actually have a left list
+        // panel or a right InfoSidebar at all - Calls/Files/Settings are
+        // single-pane screens with nothing for these to show or hide. The
+        // right panel further depends on a real 1:1 conversation actually
+        // being open: a group conversation never gets an InfoSidebar (see
+        // App.jsx's own render), and neither does Nearby with nothing
+        // selected yet (just the radar).
+        hasLeftPanel={active === "nearby" || active === "chats"}
+        hasRightPanel={(active === "nearby" || active === "chats") && Boolean(selectedPeer) && !selectedGroup}
+      />
 
       {modal === "sendFile" && <SendFileModal candidates={sendFileCandidates} onClose={() => setModal(null)} />}
       {modal === "contacts" && <ContactsModal onClose={() => setModal(null)} />}
@@ -339,11 +388,36 @@ export default function TitleBar({
       {modal === "disappearing" && selectedPeer && <DisappearingMessagesModal peerId={selectedPeer.peer_id} peerName={selectedPeer.name} onClose={() => setModal(null)} />}
       {modal === "chatTheme" && selectedPeer && <ChatThemeModal peerId={selectedPeer.peer_id} onClose={() => setModal(null)} />}
       {modal === "updates" && <UpdatesModal onClose={() => setModal(null)} />}
+
+      {/* Fully-automatic install in progress (see maybeAutoCheck above) -
+          not a click-through dialog, just real visibility into something
+          that's about to close the app out from under whoever's using it. */}
+      {autoInstallStatus && (
+        <div
+          style={{
+            position: "fixed",
+            top: 48,
+            right: 16,
+            zIndex: 1300,
+            padding: "10px 16px",
+            borderRadius: 12,
+            background: "#2a2320",
+            color: "#f9f1e8",
+            fontSize: 12.5,
+            fontWeight: 600,
+            boxShadow: "0 18px 40px rgba(20,14,10,0.35)",
+            WebkitAppRegion: "no-drag",
+          }}
+        >
+          {autoInstallStatus === "downloading" ? "Downloading an update…" : "Installing update - Agora will restart shortly…"}
+        </div>
+      )}
     </div>
   );
 }
 
-function RightCluster({ electron, showStatus, connected, peerCount }) {
+function RightCluster({ electron, showStatus, connected, peerCount, leftPanelVisible, onToggleLeftPanel, sidebarVisible, onToggleFocus, onToggleSidebar, hasLeftPanel = false, hasRightPanel = false }) {
+  const bothHidden = !leftPanelVisible && !sidebarVisible;
   return (
     <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, alignSelf: "stretch" }}>
       {showStatus && (
@@ -365,8 +439,84 @@ function RightCluster({ electron, showStatus, connected, peerCount }) {
           </span>
         </div>
       )}
+      {/* Layout switcher: left list panel, a centered focus view with both
+          panels hidden, right info sidebar - same three-way idea VS Code's
+          own panel-toggle icons use. Only rendered when actually relevant -
+          Calls/Files/Settings are single-pane screens with no panel to
+          toggle at all, and the right sidebar specifically only ever
+          exists for a real 1:1 conversation. onToggleFocus itself hides
+          both if either is currently visible, and restores both if both
+          are already hidden, so it's a real toggle rather than a one-way
+          action with no way back except re-showing each side individually. */}
+      {(hasLeftPanel || hasRightPanel) && (
+        <div style={{ display: "flex", alignItems: "center", gap: 2, WebkitAppRegion: "no-drag" }}>
+          {hasLeftPanel && (
+            <LayoutToggleButton title="Toggle left panel" active={leftPanelVisible} onClick={onToggleLeftPanel}>
+              <PanelIcon side="left" active={leftPanelVisible} />
+            </LayoutToggleButton>
+          )}
+          {hasLeftPanel && hasRightPanel && (
+            <LayoutToggleButton title="Focus mode (hide both panels)" active={bothHidden} onClick={onToggleFocus}>
+              <FocusIcon active={bothHidden} />
+            </LayoutToggleButton>
+          )}
+          {hasRightPanel && (
+            <LayoutToggleButton title="Toggle info sidebar" active={sidebarVisible} onClick={onToggleSidebar}>
+              <PanelIcon side="right" active={sidebarVisible} />
+            </LayoutToggleButton>
+          )}
+        </div>
+      )}
       <WindowControls electron={electron} />
     </div>
+  );
+}
+
+function LayoutToggleButton({ title, active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      title={title}
+      style={{
+        width: 26,
+        height: 26,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        borderRadius: 7,
+        border: "none",
+        background: active ? "var(--surface-2)" : "transparent",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function PanelIcon({ side, active }) {
+  const color = active ? "var(--text-strong)" : "var(--icon-muted)";
+  // A rounded outer frame with a vertical divider roughly a third of the
+  // way in, the shaded side filled to show which panel this button
+  // represents - left-shaded for the left list panel, right-shaded (just
+  // the same icon mirrored) for the right info sidebar.
+  const dividerX = side === "left" ? 6.5 : 11.5;
+  const fillRectX = side === "left" ? 2 : dividerX;
+  return (
+    <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+      <rect x="2" y="3" width="14" height="12" rx="2.5" stroke={color} strokeWidth="1.4" />
+      <rect x={fillRectX} y="3.7" width={dividerX - 2} height="10.6" rx="1" fill={color} opacity={0.35} />
+      <line x1={dividerX} y1="3" x2={dividerX} y2="15" stroke={color} strokeWidth="1.4" />
+    </svg>
+  );
+}
+
+function FocusIcon({ active }) {
+  const color = active ? "var(--text-strong)" : "var(--icon-muted)";
+  return (
+    <svg width="16" height="16" viewBox="0 0 18 18" fill="none">
+      <rect x="2" y="3" width="14" height="12" rx="2.5" stroke={color} strokeWidth="1.4" />
+      <rect x="5.5" y="6.2" width="7" height="5.6" rx="1" fill={color} />
+    </svg>
   );
 }
 

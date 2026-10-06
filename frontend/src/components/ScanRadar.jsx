@@ -26,19 +26,21 @@ function nodePosition(peerId) {
 // happening. Every label is either always-true (transport, protocol) or
 // live data (peer count, each peer's own avatar color as their blip) -
 // nothing here is invented telemetry.
-export default function ScanRadar({ peers = [] }) {
+export default function ScanRadar({ peers = [], onRescan, scanning = false, onOpenDiagnostics }) {
   return (
     <div
       style={{
         flex: 1,
         position: "relative",
-        overflow: "hidden",
+        overflowY: "auto",
+        overflowX: "hidden",
         background: "var(--ground)",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
         gap: 22,
+        padding: "26px 0",
       }}
     >
       <div
@@ -142,9 +144,45 @@ export default function ScanRadar({ peers = [] }) {
         })}
       </div>
 
-      <p className="serif" style={{ fontSize: 20, color: "var(--text-3)", animation: "agFade 1.8s ease-in-out infinite", textAlign: "center" }}>
+      <p className="serif" style={{ fontSize: 20, color: "var(--text-3)", animation: peers.length === 0 ? "agFade 1.8s ease-in-out infinite" : "none", textAlign: "center" }}>
         {peers.length === 0 ? "Scanning for people nearby…" : "Pick someone to start talking to"}
       </p>
+
+      {/* Matches design screen 10.2's empty state: real, actionable
+          troubleshooting rather than just "keep waiting" - the three
+          things actually worth checking when discovery finds no one,
+          in the order they're most likely to be the real cause. Router
+          AP/client isolation specifically is a confirmed real-world
+          cause, not a hypothetical - see BUILD_LOG's own live two-device
+          testing notes. */}
+      {peers.length === 0 && (
+        <div style={{ width: "min(90vw, 480px)", display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {[
+              "Same network, same band — guest WiFi and 2.4/5 GHz splits are often isolated.",
+              "Router device isolation — look for “AP isolation” in your WiFi settings.",
+              "Firewall — your OS may be blocking Agora's local port.",
+            ].map((tip, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 11, padding: "11px 13px", borderRadius: 14, background: "var(--surface)", border: "1px solid var(--border-soft)" }}>
+                <span style={{ width: 20, height: 20, flexShrink: 0, borderRadius: 99, background: "var(--accent-soft)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>{i + 1}</span>
+                <span style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.5 }}>{tip}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+            {onRescan && (
+              <button onClick={onRescan} disabled={scanning} style={{ padding: "10px 18px", borderRadius: 12, background: "var(--accent)", color: "#fff8f2", border: "none", fontSize: 13, fontWeight: 600, opacity: scanning ? 0.7 : 1 }}>
+                {scanning ? "Scanning…" : "Rescan network"}
+              </button>
+            )}
+            {onOpenDiagnostics && (
+              <button onClick={onOpenDiagnostics} style={{ padding: "10px 18px", borderRadius: 12, background: "var(--surface)", color: "var(--text-strong)", border: "1px solid var(--border)", fontSize: 13, fontWeight: 600 }}>
+                Open diagnostics
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

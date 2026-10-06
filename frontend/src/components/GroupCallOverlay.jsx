@@ -70,6 +70,7 @@ export default function GroupCallOverlay({ groupCall, incomingGroupCall, muted, 
   const { groupName, media, participants } = groupCall;
   const entries = Object.entries(participants);
   const sharingPeers = entries.filter(([, p]) => p.sharingScreen);
+  const someoneElseSharing = !sharingScreen && sharingPeers.length > 0;
   // Screen tiles count toward the grid too, so sharing to a 3-person mesh
   // doesn't cram a screen into the same cramped space as a face - it's
   // real content someone specifically wants seen clearly.
@@ -122,8 +123,17 @@ export default function GroupCallOverlay({ groupCall, incomingGroupCall, muted, 
             {cameraOff ? "Camera on" : "Camera off"}
           </button>
         )}
-        {/* Not gated on media === "video" - works from an audio group call too. */}
-        <button onClick={sharingScreen ? onStopScreenShare : () => setPickerOpen(true)} style={ctrlBtnStyle(sharingScreen)}>
+        {/* Not gated on media === "video" - works from an audio group call too.
+            Capped at one sharer at a time (see useGroupCall's own comment on
+            startGroupScreenShare for why - real WiFi cost, not an arbitrary
+            limit): the button is disabled, with a reason, for everyone but
+            whoever is already sharing, and comes back the moment they stop. */}
+        <button
+          onClick={sharingScreen ? onStopScreenShare : () => setPickerOpen(true)}
+          disabled={someoneElseSharing}
+          title={someoneElseSharing ? `${sharingPeers[0][1].name} is already sharing - you can share once they stop` : undefined}
+          style={{ ...ctrlBtnStyle(sharingScreen), opacity: someoneElseSharing ? 0.5 : 1, cursor: someoneElseSharing ? "not-allowed" : "pointer" }}
+        >
           {sharingScreen ? "Stop sharing" : "Share screen"}
         </button>
         <button onClick={onHangUp} style={{ ...ctrlBtnStyle(false), background: "var(--danger)", color: "#fff" }}>

@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { api, connectEvents } from "../api";
-import { initials } from "../lib/avatar";
-import { isImageFile, isVideoFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
+import { initials, paletteFor } from "../lib/avatar";
+import DropdownMenu from "./DropdownMenu";
+import GroupMembersModal from "./GroupMembersModal";
+import { isImageFile, isVideoFile, isVoiceMessage, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
 import SecurityGate from "./SecurityGate";
 import FileOpenActions from "./FileOpenActions";
 import ImagePreview from "./ImagePreview";
 import VideoPreview from "./VideoPreview";
+import VoiceBubblePlayer from "./VoiceBubblePlayer";
+import VoiceRecorder from "./VoiceRecorder";
 import BubbleContextMenu, { useContextMenu } from "./BubbleContextMenu";
 
 // Must match backend/app/groups.py's MAX_GROUP_CALL_MEMBERS - kept here as
@@ -49,7 +53,8 @@ function collapseSentCopies(files) {
 // machinery (all already generic, none of it was actually 1:1-specific),
 // group chat only adds the sender-name label and the sent-copy collapsing
 // above - no new transfer protocol, no new safety logic.
-export default function GroupConversationPane({ group, onlineCount, onStartCall, me, livePeers = [], conversations = [], otherGroups = [], searchOpen = false, onCloseSearch }) {
+export default function GroupConversationPane({ group, onlineCount, onStartCall, me, livePeers = [], conversations = [], otherGroups = [], searchOpen = false, onCloseSearch, onOpenSearch, onExportConversation }) {
+  const [membersModalOpen, setMembersModalOpen] = useState(false);
   const [messages, setMessages] = useState([]);
   const [files, setFiles] = useState([]);
   const [draft, setDraft] = useState("");
@@ -59,6 +64,7 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [filePath, setFilePath] = useState("");
   const hasNativePicker = Boolean(window.electronAPI?.pickFile);
+  const [voiceActive, setVoiceActive] = useState(false);
   const bottomRef = useRef(null);
   const groupIdRef = useRef(group?.group_id);
   groupIdRef.current = group?.group_id;
@@ -70,6 +76,20 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
   function refreshFiles() {
     if (!group) return;
     api.groupFiles(group.group_id).then(setFiles).catch(() => {});
+  }
+
+  // VoiceRecorder owns the whole hold/slide-to-cancel/lock/review state
+  // machine itself - see ConversationPane.jsx's identical comment on its
+  // own handleSendVoiceNote. Only real difference here is the
+  // destination: sendGroupVoiceMessage fans the clip out to every member
+  // the same way sendGroupFile already does for any other attachment.
+  function handleSendVoiceNote(blob, note) {
+    if (!group) return;
+    api
+      .sendGroupVoiceMessage(group.group_id, blob)
+      .then(() => setTimeout(refreshFiles, 400))
+      .catch(() => {});
+    if (note) api.sendGroupMessage(group.group_id, note).catch(() => {});
   }
 
   useEffect(() => {
@@ -233,23 +253,52 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
   return (
     <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", background: "var(--ground)" }}>
       <div style={{ flex: "0 0 auto", height: 62, borderBottom: "1px solid var(--divider)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 13, padding: "0 20px" }}>
-        <span style={{ width: 38, height: 38, borderRadius: 12, background: "var(--avatar-self)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 600, flexShrink: 0 }}>
-          {initials(group.name)}
+        {/* Design screen 10.3: overlapping member avatars instead of a
+            single group-initials badge - capped at 3 shown, same idea as
+            GroupCallOverlay's own participant stack. */}
+        <span style={{ display: "flex", flexShrink: 0 }}>
+          {group.members.slice(0, 3).map((m, i) => {
+            const { bg, text } = paletteFor(m.peer_id);
+            return (
+              <span
+                key={m.peer_id}
+                style={{
+                  width: 38,
+                  height: 38,
+                  borderRadius: 99,
+                  background: bg,
+                  color: text,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 12,
+                  fontWeight: 600,
+                  border: "2px solid var(--panel)",
+                  marginLeft: i === 0 ? 0 : -14,
+                }}
+              >
+                {initials(m.name)}
+              </span>
+            );
+          })}
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 15.5 }}>{group.name}</div>
-          <div style={{ fontSize: 12, color: "var(--text-2)", fontWeight: 500 }}>
+          <div style={{ fontWeight: 600, fontSize: 15.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{group.name}</div>
+          <div style={{ fontSize: 12, color: "var(--text-2)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {group.members.length} people{onlineCount != null ? ` · ${onlineCount} on this network right now` : ""}
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        {/* Same real fix as ConversationPane.jsx's identical header button
+            group - flexShrink: 1 + overflowX here instead of rigid, so a
+            narrow window scrolls just this row instead of the whole page. */}
+        <div style={{ display: "flex", gap: 8, flexShrink: 1, minWidth: 0, overflowX: "auto", scrollbarWidth: "none" }}>
           <button
             onClick={() => handleStartCall("audio")}
             disabled={callDisabled}
             title={callDisabled ? `Group calling is limited to ${MAX_GROUP_CALL_MEMBERS} people, this group has ${group.members.length}` : undefined}
             style={{ ...pillButtonStyle, opacity: callDisabled ? 0.5 : 1 }}
           >
-            Call
+            Call all
           </button>
           <button
             onClick={() => handleStartCall("video")}
@@ -259,8 +308,20 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
           >
             Video
           </button>
+          <button onClick={() => setMembersModalOpen(true)} style={pillButtonStyle}>
+            Members
+          </button>
+          <DropdownMenu
+            label="···"
+            items={[
+              { label: "Search in Conversation...", onClick: () => onOpenSearch?.() },
+              { label: "Export Conversation...", onClick: () => onExportConversation?.() },
+            ]}
+          />
         </div>
       </div>
+
+      {membersModalOpen && <GroupMembersModal group={group} livePeers={livePeers} selfPeerId={me?.peer_id} onClose={() => setMembersModalOpen(false)} />}
 
       {searchOpen && (
         <div style={{ flex: "0 0 auto", padding: "10px 20px", borderBottom: "1px solid var(--divider)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 10 }}>
@@ -270,7 +331,7 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && onCloseSearch?.()}
             placeholder={`Search in ${group.name}`}
-            style={{ flex: 1, height: 36, borderRadius: 11, border: "1px solid var(--border)", padding: "0 13px", fontSize: 13.5 }}
+            style={{ flex: 1, minWidth: 0, height: 36, borderRadius: 11, border: "1px solid var(--border)", padding: "0 13px", fontSize: 13.5 }}
           />
           <button
             onClick={() => {
@@ -336,26 +397,36 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
             <AttachMenuItem label="Any file" onClick={() => handlePickFile("any")} />
           </div>
         )}
-        <button
-          onClick={() => (hasNativePicker ? setAttachMenuOpen((v) => !v) : setFilePickerOpen((v) => !v))}
-          style={{ width: 38, height: 38, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "var(--text-muted)", flexShrink: 0 }}
-        >
-          +
-        </button>
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleSend()}
-          placeholder={`Message ${group.name}`}
-          style={{ flex: 1, height: 42, borderRadius: 14, border: "1px solid var(--border)", padding: "0 15px", fontSize: 14 }}
-        />
-        <button
-          onClick={handleSend}
-          disabled={!draft.trim()}
-          style={{ padding: "0 18px", height: 42, borderRadius: 14, border: "none", background: draft.trim() ? "var(--accent)" : "var(--border)", color: draft.trim() ? "#fff8f2" : "var(--text-3)", fontWeight: 600, fontSize: 14 }}
-        >
-          Send
-        </button>
+        {!voiceActive && (
+          <>
+            <button
+              onClick={() => (hasNativePicker ? setAttachMenuOpen((v) => !v) : setFilePickerOpen((v) => !v))}
+              style={{ width: 38, height: 38, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "var(--text-muted)", flexShrink: 0 }}
+            >
+              +
+            </button>
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSend()}
+              placeholder={`Message ${group.name}`}
+              style={{ flex: 1, minWidth: 0, height: 42, borderRadius: 14, border: "1px solid var(--border)", padding: "0 15px", fontSize: 14 }}
+            />
+          </>
+        )}
+        {/* Single stable instance - see ConversationPane.jsx's identical
+            comment for why conditionally mounting a second one instead of
+            just moving this one is a real bug, not just untidy. */}
+        <VoiceRecorder onSend={handleSendVoiceNote} onActiveChange={setVoiceActive} />
+        {!voiceActive && (
+          <button
+            onClick={handleSend}
+            disabled={!draft.trim()}
+            style={{ padding: "0 18px", height: 42, borderRadius: 14, border: "none", background: draft.trim() ? "var(--accent)" : "var(--border)", color: draft.trim() ? "#fff8f2" : "var(--text-3)", fontWeight: 600, fontSize: 14 }}
+          >
+            Send
+          </button>
+        )}
       </div>
 
       {!hasNativePicker && filePickerOpen && (
@@ -364,7 +435,7 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
             value={filePath}
             onChange={(e) => setFilePath(e.target.value)}
             placeholder="Full path to a file on this machine"
-            style={{ flex: 1, height: 38, borderRadius: 12, border: "1px solid var(--border)", padding: "0 13px", fontSize: 13.5, fontFamily: '"IBM Plex Mono", monospace' }}
+            style={{ flex: 1, minWidth: 0, height: 38, borderRadius: 12, border: "1px solid var(--border)", padding: "0 13px", fontSize: 13.5, fontFamily: '"IBM Plex Mono", monospace' }}
           />
           <button onClick={handleSendFilePath} style={pillButtonStyle}>
             Send file
@@ -446,6 +517,15 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, onDel
   // leaving a blank gap where the thumbnail should be.
   const showImage = !sent && isImageFile(file.filename) && Boolean(file.saved_path) && !imagePreviewFailed;
   const [videoPreviewFailed, setVideoPreviewFailed] = useState(false);
+  // Checked, and rendered, before showVideo below - a voice note is also a
+  // .webm file (see fileTypes.js's isVoiceMessage), so isVideoFile would
+  // independently match it too; this just has to win the ternary first.
+  // Deliberately NOT gated on !sent the way showImage/showVideo above are -
+  // a sent voice note is the one file type whose saved_path the sender
+  // genuinely does keep (see filetransfer.py's keep_sender_copy), so they
+  // can hear their own note played back too, same as the receiver can.
+  const [audioPreviewFailed, setAudioPreviewFailed] = useState(false);
+  const showAudio = isVoiceMessage(file.filename) && Boolean(file.saved_path) && !audioPreviewFailed;
   const showVideo = !sent && isVideoFile(file.filename) && Boolean(file.saved_path) && !videoPreviewFailed;
   // Same restriction as ConversationPane's own canForward: only a received,
   // completed file has a real local saved_path to re-send from.
@@ -461,8 +541,8 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, onDel
         style={{
           padding: "11px 13px",
           borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
-          background: "var(--surface)",
-          border: isExecutable ? "1.5px solid var(--danger)" : "1px solid var(--border-soft)",
+          background: sent && showAudio ? "var(--accent)" : "var(--surface)",
+          border: isExecutable ? "1.5px solid var(--danger)" : showAudio ? "none" : "1px solid var(--border-soft)",
           display: "flex",
           flexDirection: "column",
           gap: 10,
@@ -475,6 +555,8 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, onDel
               {file.filename} · {formatSize(file.size)}
             </div>
           </>
+        ) : showAudio ? (
+          <VoiceBubblePlayer transferId={file.transfer_id} filename={file.filename} variant={sent ? "sent" : "received"} onFail={() => setAudioPreviewFailed(true)} />
         ) : showVideo ? (
           <>
             <VideoPreview transferId={file.transfer_id} filename={file.filename} onFail={() => setVideoPreviewFailed(true)} />
@@ -543,4 +625,5 @@ const pillButtonStyle = {
   fontSize: 12.5,
   fontWeight: 600,
   color: "var(--text-strong)",
+  flexShrink: 0,
 };

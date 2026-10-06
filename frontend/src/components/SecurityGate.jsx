@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { api } from "../api";
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -20,12 +21,35 @@ export default function SecurityGate({ file, peerName, onClose, onAccept, onDecl
   const [ackKnown, setAckKnown] = useState(false);
   const [ackUnderstood, setAckUnderstood] = useState(false);
   const [unlockIn, setUnlockIn] = useState(3);
+  // Design screen 10.5's "known: 14 days, 62 messages" trust line - a real
+  // relationship signal (how long, how much history), not decoration, and
+  // computed from history this app already has rather than a new backend
+  // field: the earliest message timestamp with this peer is "known since",
+  // the count is just the history length.
+  const [knownInfo, setKnownInfo] = useState(null);
 
   useEffect(() => {
     if (unlockIn <= 0) return;
     const t = setTimeout(() => setUnlockIn((s) => s - 1), 1000);
     return () => clearTimeout(t);
   }, [unlockIn]);
+
+  useEffect(() => {
+    if (!file.peer_id) return;
+    let cancelled = false;
+    api
+      .history(file.peer_id)
+      .then((msgs) => {
+        if (cancelled || msgs.length === 0) return;
+        const earliest = Math.min(...msgs.map((m) => m.ts));
+        const days = Math.max(0, Math.floor((Date.now() / 1000 - earliest) / 86400));
+        setKnownInfo({ days, count: msgs.length });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [file.peer_id]);
 
   const canProceed = ackKnown && ackUnderstood && unlockIn <= 0;
 
@@ -56,6 +80,12 @@ export default function SecurityGate({ file, peerName, onClose, onAccept, onDecl
           <div className="mono" style={{ fontSize: 12, lineHeight: 1.7, color: "#a3948a" }}>
             sender &nbsp;&nbsp;{peerName}
             <br />
+            {knownInfo && (
+              <>
+                known &nbsp;&nbsp;{knownInfo.days === 0 ? "first contact today" : `${knownInfo.days} day${knownInfo.days === 1 ? "" : "s"}`}, {knownInfo.count} message{knownInfo.count === 1 ? "" : "s"}
+                <br />
+              </>
+            )}
             sha256 &nbsp;&nbsp;{file.sha256 ? `${file.sha256.slice(0, 8)}…${file.sha256.slice(-4)}` : "unknown"}
           </div>
         </div>

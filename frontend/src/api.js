@@ -49,6 +49,21 @@ export const api = {
   declineFile: (transferId) => request(`/files/${transferId}/decline`, { method: "POST" }),
   resendFile: (transferId) => request(`/files/${transferId}/resend`, { method: "POST" }),
   deleteFile: (transferId) => request(`/files/${transferId}`, { method: "DELETE" }),
+  // Raw recorded bytes, same shape as setMyPhoto below - there's no local
+  // path to send the way sendFile/sendGroupFile above expect, since
+  // MediaRecorder's output never touches disk on its own. The backend
+  // writes it once and sends it through the exact same path every other
+  // file already goes through (see api.py's send_voice_message).
+  sendVoiceMessage: async (peerId, blob) => {
+    const res = await fetch(`${BASE}/files/send-voice?peer_id=${encodeURIComponent(peerId)}`, { method: "POST", body: blob });
+    if (!res.ok) throw new Error(`POST /files/send-voice failed: ${res.status}`);
+    return res.json();
+  },
+  sendGroupVoiceMessage: async (groupId, blob) => {
+    const res = await fetch(`${BASE}/files/send-voice?group_id=${encodeURIComponent(groupId)}`, { method: "POST", body: blob });
+    if (!res.ok) throw new Error(`POST /files/send-voice failed: ${res.status}`);
+    return res.json();
+  },
   // Not a JSON request/response like everything else here - this is a
   // direct URL for a <video>/<audio>/<img> element's own src, so the
   // browser's native media loader handles Range requests (seeking) itself

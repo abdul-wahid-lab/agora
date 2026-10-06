@@ -95,9 +95,13 @@ export async function getLocalStream(media) {
 // video slot right from the start (see addScreenTransceiver below). Sharing
 // later is just RTCRtpSender.replaceTrack() into that already-negotiated
 // slot: no renegotiation, no new signaling, works today's calling.py
-// completely unmodified. The receiving side finds out sharing started or
-// stopped from that track's own native mute/unmute events (a real signal
-// WebRTC already provides), not a message this app invented.
+// completely unmodified. The receiving side finding out sharing started or
+// stopped was originally meant to ride that track's own native mute/unmute
+// events, but real two-browser testing showed those don't fire reliably
+// enough to build a UI on (replaceTrack(null) stopped real frames while
+// track.muted stayed false for 20+ seconds) - useCall.js's pre-negotiated
+// data channel, with explicit screen_share_start/stop messages, is what
+// actually drives this now.
 export function addScreenTransceiver(pc) {
   return pc.addTransceiver("video", { direction: "sendrecv" });
 }

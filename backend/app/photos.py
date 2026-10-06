@@ -90,7 +90,24 @@ class PhotoExchange:
         bytes, or None if they genuinely have no photo set. Raises
         ConnectionError if they're not reachable at all, or TimeoutError if
         they don't answer in time - either way the caller treats "couldn't
-        get a fresh one" the same regardless of which."""
+        get a fresh one" the same regardless of which.
+
+        A real, not just theoretical, race: ConversationPane's header and
+        InfoSidebar both render a PeerAvatar for the same peer_id on the
+        same page, so two GET /peers/{id}/photo requests for one peer
+        genuinely do land back to back with no cache yet to short-circuit
+        either of them. Without reusing an in-flight request here, the
+        second call's fresh Future would silently replace the first's in
+        self._waiters, and the peer's one real response would only ever
+        resolve the second - the first would time out and report 404 for a
+        peer that actually did answer, just not to it. Piggybacking both
+        callers on the same in-flight Future avoids that, and avoids
+        sending the peer a redundant second request for the same thing."""
+        existing = self._waiters.get(peer_id)
+        if existing is not None and not existing.done():
+            b64_shared = await asyncio.wait_for(asyncio.shield(existing), timeout=timeout)
+            return base64.b64decode(b64_shared) if b64_shared else None
+
         loop = asyncio.get_event_loop()
         fut: asyncio.Future = loop.create_future()
         self._waiters[peer_id] = fut

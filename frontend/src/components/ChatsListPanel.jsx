@@ -62,7 +62,7 @@ export default function ChatsListPanel({ conversations, groups, selected, onSele
                 {initials(g.name)}
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{g.name}</div>
+                <div style={{ fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{g.name}</div>
                 <div style={{ fontSize: 11.5, color: "var(--text-muted)" }}>{g.members.length} people</div>
               </div>
             </button>
@@ -116,7 +116,7 @@ export default function ChatsListPanel({ conversations, groups, selected, onSele
                 {initials(c.name || "Unknown")}
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name || "Unknown"}</div>
+                <div style={{ fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name || "Unknown"}</div>
                 <div style={{ fontSize: 11.5, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {fmtPreview(c.last_body, c.last_direction)}
                 </div>

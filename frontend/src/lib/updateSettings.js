@@ -4,6 +4,7 @@
 // device, in a direct fetch() to api.github.com when the user deliberately
 // deletes a release - never bundled into the app, never sent anywhere else.
 const AUTO_UPDATE_KEY = "agora.autoUpdateEnabled";
+const AUTO_INSTALL_KEY = "agora.autoInstallEnabled";
 const INTERVAL_DAYS_KEY = "agora.updateCheckIntervalDays";
 const LAST_CHECKED_KEY = "agora.updateLastCheckedAt";
 const GITHUB_TOKEN_KEY = "agora.githubToken";
@@ -59,6 +60,29 @@ export function setAutoUpdateEnabled(enabled) {
     localStorage.setItem(AUTO_UPDATE_KEY, enabled ? "1" : "0");
   } catch {
     // ignore - a preference, not worth crashing over
+  }
+}
+
+// A real second step past "automatically check": with this also on, a
+// background check that finds a genuinely newer release downloads and
+// installs it with no click required at all, rather than only opening the
+// Updates dialog for a human to finish. Off by default even when auto-check
+// is on - checking silently is one thing, installing and restarting the
+// app without any action from the person using it is a meaningfully bigger
+// thing to opt into, so it's a separate, explicit choice.
+export function getAutoInstallEnabled() {
+  try {
+    return localStorage.getItem(AUTO_INSTALL_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function setAutoInstallEnabled(enabled) {
+  try {
+    localStorage.setItem(AUTO_INSTALL_KEY, enabled ? "1" : "0");
+  } catch {
+    // ignore
   }
 }
 

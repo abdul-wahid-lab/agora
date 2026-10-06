@@ -43,13 +43,27 @@ function formatWhen(ts) {
 // executable files that requires two acknowledgements plus a timed delay
 // before it'll even reveal the file, matching the design's own copy and
 // timing exactly.
-export default function FilesScreen() {
+export default function FilesScreen({ initialPeerFilter, onConsumeInitialPeerFilter }) {
   const { peers } = usePeers();
   const [files, setFiles] = useState([]);
-  const [category, setCategory] = useState("all"); // all | received | sent | peer:<id>
+  const [category, setCategory] = useState(initialPeerFilter ? `peer:${initialPeerFilter}` : "all"); // all | received | sent | peer:<id>
   const [typeFilter, setTypeFilter] = useState("All");
   const [search, setSearch] = useState("");
   const [gateFile, setGateFile] = useState(null);
+
+  // Arriving here via a conversation's own "Files" button (design screen
+  // 10.7's header action) jumps straight to that person's files, same as
+  // clicking their row in the BY PERSON list below would - but only once,
+  // the moment this screen mounts for that request: switching categories
+  // by hand afterward shouldn't keep getting overridden back on a later
+  // re-render, and a second click of the same conversation's Files button
+  // (same peer id, already here) shouldn't fight the sidebar either.
+  useEffect(() => {
+    if (!initialPeerFilter) return;
+    setCategory(`peer:${initialPeerFilter}`);
+    onConsumeInitialPeerFilter?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPeerFilter]);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,6 +103,18 @@ export default function FilesScreen() {
     if (search.trim() && !f.filename.toLowerCase().includes(search.trim().toLowerCase())) return false;
     return true;
   });
+
+  // "Delete for me": same semantics as ConversationPane's own
+  // handleDeleteFile - removes only this device's local history entry for
+  // the transfer, never touches the downloaded bytes on disk (see
+  // storage.py's delete_file), nothing goes over the wire. Optimistic
+  // removal from local state either way - if the DELETE somehow fails, the
+  // next 3s poll just brings the row back rather than the UI silently
+  // lying about the outcome.
+  function handleDeleteFile(f) {
+    setFiles((prev) => prev.filter((row) => row.transfer_id !== f.transfer_id));
+    api.deleteFile(f.transfer_id).catch(() => {});
+  }
 
   function handleRowClick(f) {
     if (f.direction === "received" && f.status === "awaiting_accept") {
@@ -130,17 +156,28 @@ export default function FilesScreen() {
       </div>
 
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", padding: "18px 22px", gap: 14 }}>
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <div style={{ flex: 1, height: 38, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 9, padding: "0 13px" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", minWidth: 0 }}>
+          {/* minWidth: 0 here is a real fix, not decoration - a flex item's
+              default min-width is "auto" (its content's own minimum), and a
+              text <input> has a notoriously large one in most browsers.
+              Without this, the search box refused to shrink at all in a
+              narrow window, so the type-filter pills to its right got
+              pushed past the panel's own edge instead - a real report, not
+              hypothetical. */}
+          <div style={{ flex: 1, minWidth: 0, height: 38, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", gap: 9, padding: "0 13px" }}>
             <span style={{ width: 13, height: 13, borderRadius: 99, border: "2px solid var(--icon-muted)", flexShrink: 0 }} />
             <input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={`Search ${files.length} files…`}
-              style={{ border: "none", outline: "none", background: "transparent", fontSize: 13.5, flex: 1 }}
+              style={{ border: "none", outline: "none", background: "transparent", fontSize: 13.5, flex: 1, minWidth: 0 }}
             />
           </div>
-          <div style={{ display: "flex", gap: 6 }}>
+          {/* A second line of defense past the search box shrinking: if the
+              window is narrow enough that even a fully-collapsed search box
+              isn't room enough for every pill, this scrolls horizontally
+              within its own bounds instead of spilling past the panel. */}
+          <div style={{ display: "flex", gap: 6, flexShrink: 0, overflowX: "auto" }}>
             {["All", "Docs", "Images", "Video", "Archives", "Apps"].map((t) => (
               <button
                 key={t}
@@ -153,6 +190,7 @@ export default function FilesScreen() {
                   color: typeFilter === t ? "var(--surface)" : "var(--text-strong)",
                   fontSize: 12,
                   fontWeight: 600,
+                  flexShrink: 0,
                 }}
               >
                 {t}
@@ -184,6 +222,14 @@ export default function FilesScreen() {
             // (filetransfer.py's resend() rejects anything that isn't
             // direction "sent").
             const failed = f.direction === "sent" && f.status === "failed";
+            // Same restriction as ConversationPane's FileBubble: deleting a
+            // transfer that's still pending accept/decline or actively
+            // transferring would hide it from this view while the actual
+            // transfer (and the other side's copy of it) carries on
+            // regardless - history for it would just reappear on the next
+            // poll anyway, so there's nothing a delete here could honestly do.
+            const inProgress = f.status === "transferring" || f.status === "accepted";
+            const canDelete = !pending && !inProgress;
             return (
               <div
                 key={f.transfer_id}
@@ -241,6 +287,18 @@ export default function FilesScreen() {
                     style={{ padding: "6px 10px", borderRadius: 9, background: "var(--surface)", border: "1px solid var(--danger)", fontSize: 11.5, fontWeight: 600, color: "var(--danger)", flexShrink: 0 }}
                   >
                     Retry
+                  </button>
+                )}
+                {canDelete && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleDeleteFile(f);
+                    }}
+                    title="Remove from your history (your downloaded copy, if any, is kept)"
+                    style={{ padding: "6px 10px", borderRadius: 9, background: "transparent", border: "1px solid var(--border)", fontSize: 11.5, fontWeight: 600, color: "var(--text-muted)", flexShrink: 0 }}
+                  >
+                    Delete
                   </button>
                 )}
               </div>

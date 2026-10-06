@@ -122,6 +122,25 @@ class CallService:
     async def start_call(self, peer_id: str, sdp: dict, media: str, group_call_id: Optional[str] = None) -> str:
         if peer_id in self._active_for_peer:
             raise ValueError(f"already have an active call with {peer_id}")
+        # Same device-wide busy reasoning as _handle_offer's own check below,
+        # mirrored for the outgoing side: already ringing or in_call with
+        # anyone else makes placing a brand-new call to a different peer
+        # just as invalid as receiving one would be - the frontend only
+        # ever has one call slot to represent either case in. The real
+        # exception, found by the existing group-calling test suite
+        # immediately failing without it: a group call's mesh is this exact
+        # same device legitimately calling several members at once, all
+        # sharing one group_call_id - those parallel legs are not "busy",
+        # they're the feature working. Only a call belonging to a
+        # genuinely different call (a different group_call_id, or no
+        # group_call_id at all) counts as a real conflict.
+        for other_call_id in self._active_for_peer.values():
+            other = self._calls.get(other_call_id)
+            if not other or other.status not in ("ringing", "in_call"):
+                continue
+            if group_call_id is not None and other.group_call_id == group_call_id:
+                continue
+            raise ValueError(f"already have an active call with {other.peer_id}")
 
         call_id = str(uuid.uuid4())
         state = CallState(call_id=call_id, peer_id=peer_id, direction="outgoing", media=media, status="ringing", group_call_id=group_call_id)
@@ -186,6 +205,33 @@ class CallService:
 
     async def _handle_offer(self, peer_id: str, msg: dict) -> None:
         call_id = msg["call_id"]
+
+        # Device-wide busy check, not just per-peer: already being in a call
+        # with anyone else at all makes this device busy, full stop. The
+        # per-peer check right below only ever catches a second offer from
+        # the SAME peer_id (a real collision, or already in a call with
+        # them specifically) - a real two-person test found that a THIRD
+        # peer's offer while already in_call with someone else fell
+        # straight through this, creating a second, fully independent
+        # incoming-call state that the frontend's single-call-slot UI has
+        # no correct way to represent. Same group-call exception as
+        # start_call's own mirrored check: an incoming leg sharing the same
+        # group_call_id as another already-ringing/in_call leg on this
+        # device is a legitimate parallel mesh connection, not a conflict -
+        # found immediately by the existing group-calling test suite, which
+        # has every member receiving several such offers in a normal join.
+        incoming_group_call_id = msg.get("group_call_id")
+        for other_peer_id, other_call_id in self._active_for_peer.items():
+            if other_peer_id == peer_id:
+                continue
+            other = self._calls.get(other_call_id)
+            if not other or other.status not in ("ringing", "in_call"):
+                continue
+            if incoming_group_call_id is not None and other.group_call_id == incoming_group_call_id:
+                continue
+            await self.messaging.send_control(peer_id, {"type": "call_end", "call_id": call_id, "reason": "busy"})
+            return
+
         existing_id = self._active_for_peer.get(peer_id)
 
         if existing_id is not None:

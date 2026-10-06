@@ -23,19 +23,39 @@ export default function Onboarding({ onComplete }) {
   }
 
   async function handleChoosePhoto() {
-    const path = await window.electronAPI.pickFile("photo");
-    if (!path) return;
-    const dataUrl = await window.electronAPI.setAvatarPhoto(path);
-    if (!dataUrl) {
-      window.alert("Couldn't use that image (too large, or not a supported photo format).");
+    if (hasElectron) {
+      const path = await window.electronAPI.pickFile("photo");
+      if (!path) return;
+      const dataUrl = await window.electronAPI.setAvatarPhoto(path);
+      if (!dataUrl) {
+        window.alert("Couldn't use that image (too large, or not a supported photo format).");
+        return;
+      }
+      setPhoto(dataUrl);
+      api.setMyPhoto(dataUrl).catch(() => {});
       return;
     }
-    setPhoto(dataUrl);
-    api.setMyPhoto(dataUrl).catch(() => {});
+    // Plain-browser fallback - see SettingsScreen.jsx's own handleChoosePhoto
+    // for the full reasoning, identical here.
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        setPhoto(dataUrl);
+        api.setMyPhoto(dataUrl).catch(() => {});
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
   }
 
   async function handleRemovePhoto() {
-    await window.electronAPI.clearAvatarPhoto();
+    if (hasElectron) await window.electronAPI.clearAvatarPhoto();
     setPhoto(null);
     api.clearMyPhoto().catch(() => {});
   }
@@ -86,9 +106,8 @@ export default function Onboarding({ onComplete }) {
             <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
               <button
                 onClick={handleChoosePhoto}
-                disabled={!hasElectron}
-                title={hasElectron ? undefined : "Only available in the desktop app"}
-                style={{ padding: "9px 15px", borderRadius: 11, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 13, fontWeight: 600, color: hasElectron ? "var(--text-strong)" : "var(--text-3)", width: "fit-content", opacity: hasElectron ? 1 : 0.6, cursor: hasElectron ? "pointer" : "not-allowed" }}
+                title={hasElectron ? undefined : "Works here too, but won't be saved after this tab closes - only the desktop app keeps it permanently"}
+                style={{ padding: "9px 15px", borderRadius: 11, background: "var(--surface)", border: "1px solid var(--border)", fontSize: 13, fontWeight: 600, color: "var(--text-strong)", width: "fit-content", cursor: "pointer" }}
               >
                 {photo ? "Change photo…" : "Choose photo…"}
               </button>

@@ -1458,7 +1458,87 @@ to what's actually still missing:
 
 ## Requested in live two-person testing (2026-10-05)
 
-See BUILD_LOG.md's Steps 32-33 for full detail on everything below.
+See BUILD_LOG.md's Steps 32-36 for full detail on everything below.
+
+- [x] **Voice messages** (fixed 2026-10-06, see BUILD_LOG Step 40) - press
+  and hold the new mic button in either composer to record
+  (`getUserMedia`+`MediaRecorder`), release to send. Structurally a file
+  transfer, as scoped, through the exact same offer/accept/stream/verify
+  path - plus one new, narrowly-scoped endpoint, `POST /files/send-voice`,
+  for the one real gap the scoping note couldn't resolve on paper: a
+  recorded `Blob` never touches disk on its own the way every other
+  attachment's source path already does, so `sendFile`'s path-based
+  endpoint has nothing to point at. A voice note is told apart from a real
+  video (both are `.webm`, Chromium's only reliable `MediaRecorder` output)
+  by one fixed, exact filename rather than a new "kind" column - see
+  `fileTypes.js`'s `isVoiceMessage`. Inline playback is a new
+  `AudioPreview.jsx`, the `<audio controls>` equivalent of the existing
+  `VideoPreview.jsx`, exactly as scoped. Live-verified with two real
+  browsers (real recorded audio, not a mock) - a genuine `<audio>` element
+  with real playable data, screenshotted actual WhatsApp-style voice-note
+  bubbles in the chat timeline. Found and fixed one real bug along the way:
+  a Rules-of-Hooks violation that crashed `ConversationPane` the moment a
+  conversation was actually opened, caught only because this was tested
+  live rather than just built clean.
+
+  **Updated 2026-10-06, see BUILD_LOG Step 41** - two more real requests
+  landed on top of the above: the sender couldn't hear their own sent
+  voice note back (fixed with an opt-in `keep_sender_copy` on `send_file`/
+  `send_group_file`, used only by voice messages), and the whole
+  recording/review/playback UI was rebuilt to match a real design
+  reference (`ui prompt/Agora-standalone.html`, screens 9.1-9.3) instead
+  of the simple hold-to-send version above: a real live waveform during
+  recording, slide-to-cancel, drag-up-to-lock (hands-free recording), a
+  review screen before sending (play/discard/optional note/Send), and a
+  redesigned two-tone waveform chat bubble (`VoiceBubblePlayer.jsx`)
+  replacing native `<audio controls>`. `AudioPreview.jsx` and
+  `VoiceRecordButton.jsx` (named above) no longer exist - replaced by
+  `VoiceBubblePlayer.jsx` and `VoiceRecorder.jsx`. A real bug found live:
+  the lock gesture's first implementation was a separate clickable button,
+  which is physically impossible to use correctly with one mouse while
+  still holding the mic button down - fixed to a drag-up gesture instead,
+  the same family as slide-to-cancel.
+
+- [x] **The answering-side screen-share bug, actually root-caused this
+  time** (fixed 2026-10-05, see BUILD_LOG Step 38). The real cause: this
+  app identified "the screen transceiver" by *position* (`findScreenTransceiver`
+  - "the last video-kind transceiver, since both sides always create it
+  last") rather than by anything explicit - a real, repeatable report
+  pinned it down precisely: "if A calls, only his sharing works; if B
+  shares, it shows the camera feed instead of the screen, or nothing,"
+  which is exactly what wrong-transceiver matching looks like, not stale
+  state. Fixed by having the offering side of a connection (1:1 and every
+  group-call mesh leg) explicitly send the real `mid` of its screen
+  transceiver as a plain extra field on the call offer (the backend
+  already relays `sdp` as an opaque dict either way - zero backend
+  changes) - `mid` is the one value WebRTC itself guarantees stays
+  identical for the same m-line on both the offer and the answer, so
+  matching on it is unambiguous regardless of transceiver creation order
+  on either side. `useCall.js` and `useGroupCall.js` both updated; the old
+  position-based `findScreenTransceiver` stays as a fallback only for the
+  case where no mid was sent at all.
+
+- [x] **The actual remaining cause of the same bug, found by live-tracing
+  two real browsers instead of reasoning on paper** (fixed 2026-10-05, see
+  BUILD_LOG Step 39) - the mid fix above was real and necessary but not
+  sufficient, which is why it was still broken on retest. The real
+  mechanism: the answering side's screen m-line has no local track queued
+  up before `setRemoteDescription` runs, so the browser auto-creates its
+  transceiver as `recvonly` rather than `sendrecv` - a sender on a
+  `recvonly` transceiver silently never transmits, no matter what
+  `replaceTrack()` puts on it. That's the actual reason only the call's
+  offerer could ever share (their own screen transceiver was created
+  directly as `sendrecv`), regardless of correct mid matching. Fixed by
+  explicitly setting `screenTransceiver.direction = "sendrecv"` on the
+  answering side right before `createAnswer()`, in both `useCall.js`'s
+  `acceptCall` and `useGroupCall.js`'s `acceptMeshLeg` - still inside the
+  one and only offer/answer exchange, no renegotiation needed. Verified
+  live with two real Chromium instances (Playwright, real desktop capture
+  auto-accepted): the caller's remote-screen `<video>` element went from
+  0x0/no-track to 1280x720 live frames at the captured screen's own
+  aspect ratio, visibly distinct from the 640x480 camera feeds, with a
+  screenshot confirming the actual captured screen content renders in the
+  UI. Confirmed fixed on the user's own retest immediately afterward.
 
 - [x] **Peer avatar photos, visible to peers, cached locally, refreshed
   when changed** (fixed 2026-10-05). Reverses a prior explicit design
@@ -1520,19 +1600,169 @@ See BUILD_LOG.md's Steps 32-33 for full detail on everything below.
   how a shared screen is presented within a group call. This is a real
   visual design project of its own, not a quick change.
 
+- [x] **Fully automatic online updates, and real bogus-file detection for
+  the Local Folder source** (fixed 2026-10-05, see BUILD_LOG Step 34).
+  Online: a new, separate "Also install automatically" setting past the
+  existing "Automatically check" one - when both are on, a background
+  check that finds a real newer release downloads and installs with no
+  click at all, restarting the app on its own (a brief visible toast
+  appears first, so it's never a silent surprise). Offline: `main.cjs`'s
+  folder scan now verifies a candidate file's actual embedded Windows PE
+  `ProductName` (confirmed "Agora" on real builds via PowerShell's
+  `Get-Item ... .VersionInfo`) instead of trusting its filename alone - a
+  renamed unrelated file is now correctly left alone rather than offered
+  as an update.
+
 - [ ] **A real, live click-through test of the update button**, not just
-  the direct logic tests Step 33 ran. A real `Agora Setup 0.0.1.exe` (and
-  the original `0.0.0` one) already exist in `frontend/release/`, and a
-  demo folder with just the 0.0.1 installer in it is sitting in this
-  session's scratchpad - every attempt to launch the packaged app from
-  the automated tool environment itself exited before `main.cjs` ever
-  logged a line, while the exact same portable build's own `main.log`
-  shows it running fine for the real user on this same machine in real
-  sessions. Needs an actual human (or a properly set up Playwright/CDP
-  harness, which this project doesn't have yet) to open Settings →
-  Updates → Local Folder → Browse to that folder → confirm "0.0.1 found"
-  → Install Now, and confirm the real installer launches and the app
-  quits itself.
+  the direct logic tests Steps 33-34 ran. A real `Agora Setup 0.0.0.exe`
+  (now with everything, including Step 34's changes) exists in
+  `frontend/release/` - every attempt to launch the packaged app from the
+  automated tool environment itself exited before `main.cjs` ever logged a
+  line, while the exact same portable build's own `main.log` shows it
+  running fine for the real user on this same machine in real sessions.
+  Needs an actual human (or a properly set up Playwright/CDP harness,
+  which this project doesn't have yet) to click through: a manual check,
+  the Local Folder source against a folder with a genuine newer build in
+  it, and - if it's safe to actually let it fire - the new fully-automatic
+  install path with both settings turned on.
+
+## Desktop design-reference audit (2026-10-06, see BUILD_LOG Step 42), Round 2
+
+Requested directly - "the app should strictly follow the ui i have given." Round 1
+(quick fixes: header Files/··· button, composer control order, Nearby's empty-state
+troubleshooting panel) is done and live-verified. These are the bigger items found
+comparing the live app against `ui prompt/Agora-standalone.html`'s own ten
+"Desktop app" screens (10.1-10.10) - each needs a real new backend capability,
+not just a UI change, so each is its own scoped item rather than one big task.
+
+- [ ] **Per-peer latency and connection-quality display.** The reference shows
+  a signal-strength indicator next to each peer in the Nearby list and a
+  real round-trip latency (`2 ms`) in the call window and conversation
+  info sidebar, in place of this app's current raw IP:port display.
+  Nothing currently measures round-trip time between peers at all - needs
+  a real ping/pong mechanism over the existing control channel (or piggy-
+  backed on existing traffic) before any UI can show it honestly. Signal
+  "strength" specifically has no real underlying hardware signal this app
+  can read (software discovery over a LAN connection isn't WiFi RSSI) -
+  worth deciding whether to approximate it from latency/packet-loss
+  instead of literally faking a signal-bars icon with no real data behind
+  it.
+
+- [ ] **Device-type broadcast** ("MacBook Pro", "Pixel", "Studio desktop"
+  in the reference, instead of a raw IP address). Discovery's own
+  announcement payload would need a new field for this (OS/device name),
+  broadcast and shown the same way the existing device name already is -
+  a real wire-protocol addition, not just a frontend change.
+
+- [ ] **A dedicated Transfers panel** - bigger than originally scoped here
+  (see BUILD_LOG Step 43's 10.8 finding). The reference's file bubbles
+  show "received in 3 s · 78 MB/s" / "62% · sending · 84 MB/s · 7 s left"
+  with a cancel ✕, which still needs `filetransfer.py` to track and expose
+  real throughput over a transfer's lifetime and a real cancel path
+  through the offer/accept/stream state machine - but 10.8 shows this
+  living in a real *third sidebar panel*, "Transfers," listing every
+  active/recent transfer across every conversation at once (not just the
+  one bubble you're looking at), with per-transfer cancel/retry/reveal-in-
+  folder actions, a "Clear finished" action, and a persistent note that
+  transfers keep running even with the window closed to the tray. A real
+  standalone surface, not a bubble tweak - scope this as its own screen
+  before starting, not an incremental addition to the chat bubble.
+
+- [ ] **A system tray icon** (the reference's macOS menu-bar extra -
+  Windows' equivalent is a tray icon) showing live transfer status at a
+  glance and quick actions (Send a file…, Pause all transfers, Open
+  Agora, Quit) without the main window needing to be open or focused.
+  Doesn't exist in `main.cjs` at all currently - a real new Electron
+  surface (`Tray` API), not a window content change.
+
+- [ ] **Preferences redesign** (reference screen 10.10): start-Agora-at-
+  login toggle (Electron's `app.setLoginItemSettings`, not currently
+  used), a discovery-method picker (mDNS vs. UDP-broadcast-fallback vs.
+  automatic - the backend already does this internally via `discovery.py`
+  but exposes no choice to the user), a received-files storage breakdown
+  by category with "Reveal folder"/"Clear received files" actions, and a
+  diagnostics panel (device id, reachable peer count, handshake success
+  rate, throughput peak, uptime, "Copy diagnostics" for pasting into a bug
+  report). Current `SettingsScreen.jsx` has none of this - a real rebuild,
+  not a tweak. The reference frames this as a separate OS-style
+  Preferences window rather than an in-app tab; worth deciding whether to
+  match that literally or keep it as a richer tab, since Electron's
+  multi-window story adds real complexity (a second renderer, its own
+  IPC surface) for a UI pattern this app hasn't needed anywhere else yet.
+
+- [x] **The remaining five desktop reference screens, audited and every
+  real gap fixed** (done 2026-10-06, see BUILD_LOG Step 43): 10.3 (group
+  chat header - overlapping member avatars, "Call all," a new Members
+  list modal, Files/··· quick actions matching 1:1 chat), 10.4 (incoming-
+  call quick replies - "Can't talk now"/"Two minutes"/"Message," decline
+  with a reason instead of going silent), 10.5 (security gate's "known: N
+  days, M messages" trust line, computed from existing history), 10.6 (a
+  real "peer left the network" banner, surfacing auto-resume behavior that
+  already quietly existed), 10.8 (found the dedicated Transfers panel -
+  see the item above, rescoped rather than built small). All live-verified
+  with two real browsers, not just a clean build - including catching and
+  fixing a real bug in the new Members modal (a device never discovers
+  itself via mDNS, so it always showed its own owner as "offline" in their
+  own group).
+
+## From the voice-message design reference (2026-10-06), deliberately not built yet
+
+Found while implementing voice messages against `ui prompt/Agora-standalone.html` -
+real, deliberately designed screens (9.3-9.4), each a genuinely separate project,
+not attempted alongside the UI rebuild in BUILD_LOG Step 41.
+
+- [ ] **On-device voice message transcription.** The design shows a received
+  voice bubble with a "hold to transcribe" affordance and the transcribed
+  text shown inline, captioned "Transcribed on this device · never
+  uploaded." The real decision this needs before any code: which local
+  speech-to-text engine, since a cloud API would contradict this app's
+  entire no-internet design posture - something like whisper.cpp (a real
+  model file to ship/download, real CPU cost per transcription, a new
+  native dependency the Python backend or Electron main process would
+  need to drive) is the obvious shape, but picking and integrating one is
+  a real project, not a quick addition.
+
+- [ ] **Voice message read receipts** ("Played by Ada" in the design,
+  under a sent bubble). Needs a new small wire-protocol message (something
+  like `voice_played`, parallel to how `delivered` already works for text)
+  and UI for it - doesn't exist for any file type today, not just voice.
+
+- [ ] **Playback speed control** (1×/1.5×/2× in the design's bubble menu
+  and settings screen). Lighter-weight than the two above - `<audio>`'s
+  own `playbackRate` already does the real work - but needs a UI home: a
+  per-bubble button (shown briefly in the design next to the waveform) and/
+  or the default-speed setting below.
+
+- [ ] **A dedicated "Voice messages" settings screen** (design's 9.4):
+  toggles for on-device transcription (once built) and default playback
+  speed, plus an audio-quality readout. "Raise to listen" (hold the phone
+  to your ear) is phone-only and has no desktop equivalent - left out of
+  any future version of this screen rather than faked.
+
+## Reported 2026-10-06: didn't work over a mobile phone hotspot
+
+- [ ] **Connectivity failed, again, with one device on a phone's mobile
+  hotspot** - reported directly, not yet reproduced or diagnosed (which
+  side failed - discovery, messaging, or a call - wasn't specified in the
+  report). Worth treating as a real, separate investigation rather than
+  guessing at a fix blind, because the existing assumption already written
+  into this project's own troubleshooting notes may itself be wrong: Step
+  32's test session (BUILD_LOG, this same mobile-hotspot setup) and the
+  handbook's own troubleshooting section both currently say router AP/
+  client isolation is the risky case and "hotspots don't isolate clients
+  from each other" - but that's less true than it used to be. iOS's
+  Personal Hotspot and a growing number of Android hotspot implementations
+  now isolate connected clients from each other by default for security,
+  the same symptom this app already has a name for on the router side
+  (peers show up via mDNS/UDP broadcast - or don't - but `pending` messages
+  never move to `sent`, or two phones never discover each other at all).
+  Needs a real repro on an actual hotspot to confirm which layer is
+  actually blocked (discovery's UDP broadcast/mDNS specifically, versus the
+  direct peer-to-peer TCP messaging/file connection that discovery only
+  points at) before any fix makes sense - those are different problems
+  with different possible mitigations (e.g., falling back to a different
+  discovery mechanism isn't the same fix as working around a blocked
+  direct connection).
 
 ## Smaller known gaps (from earlier phases, still true)
 

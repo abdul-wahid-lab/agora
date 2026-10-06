@@ -30,7 +30,7 @@ const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
 const { randomUUID } = require("node:crypto");
-const { spawn } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 const https = require("node:https");
 
 const { API_PORT, P2P_PORT } = require("./config.cjs");
@@ -559,6 +559,31 @@ ipcMain.handle("update:pickFolder", async () => {
   return result.filePaths[0];
 });
 
+// Reads a .exe's own embedded Windows PE product metadata - the real
+// source of truth for "is this actually a build of this app," since
+// electron-builder stamps productName/version onto every real build from
+// this project's own build config (verified directly: a real built
+// installer's VersionInfo.ProductName really is "Agora"). Filename alone
+// is trivial to spoof (name a random .exe "Agora Setup 9.9.9.exe" and the
+// old filename-only check would have accepted it); a file that isn't
+// actually a build of this app, no matter what it's named, won't have
+// this, and getItemPropertyValue/ConvertTo-Json either throws or comes
+// back empty - both treated the same, as "not a real match," below.
+function getExeProductInfo(filePath) {
+  try {
+    const escaped = filePath.replace(/'/g, "''");
+    const out = execFileSync(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", `(Get-Item -LiteralPath '${escaped}').VersionInfo | ConvertTo-Json -Compress`],
+      { encoding: "utf-8", windowsHide: true, timeout: 5000 }
+    );
+    const info = JSON.parse(out);
+    return { productName: String(info.ProductName || ""), productVersion: String(info.ProductVersion || "") };
+  } catch {
+    return null;
+  }
+}
+
 ipcMain.handle("update:scanFolder", async (_e, folderPath) => {
   let entries;
   try {
@@ -566,12 +591,23 @@ ipcMain.handle("update:scanFolder", async (_e, folderPath) => {
   } catch {
     return { found: false };
   }
-  const exeFiles = entries.filter((f) => /\.exe$/i.test(f) && /agora/i.test(f));
-  if (exeFiles.length === 0) return { found: false };
-  const preferred = exeFiles.find((f) => /setup/i.test(f)) || exeFiles[0];
-  const versionMatch = preferred.match(/(\d+\.\d+\.\d+)/);
-  if (!versionMatch) return { found: false };
-  return { found: true, version: versionMatch[1], fileName: preferred, filePath: path.join(folderPath, preferred) };
+  // Every .exe in the folder is a candidate regardless of its name - the
+  // name is no longer trusted on its own, only used below to prefer a real
+  // installer over the portable build when both genuinely verify.
+  const exeCandidates = entries.filter((f) => /\.exe$/i.test(f));
+  const verified = [];
+  for (const f of exeCandidates) {
+    const info = getExeProductInfo(path.join(folderPath, f));
+    if (info && info.productName.trim().toLowerCase() === "agora" && info.productVersion) {
+      verified.push({ fileName: f, version: info.productVersion });
+    }
+    // A file in this folder that isn't a real Agora build - renamed,
+    // unrelated, or outright bogus - is left alone exactly as it was found,
+    // never touched or reported as a candidate.
+  }
+  if (verified.length === 0) return { found: false };
+  const preferred = verified.find((v) => /setup/i.test(v.fileName)) || verified[0];
+  return { found: true, version: preferred.version, fileName: preferred.fileName, filePath: path.join(folderPath, preferred.fileName) };
 });
 
 const gotLock = app.requestSingleInstanceLock();
