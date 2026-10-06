@@ -1613,18 +1613,22 @@ See BUILD_LOG.md's Steps 32-36 for full detail on everything below.
   renamed unrelated file is now correctly left alone rather than offered
   as an update.
 
-- [ ] **A real, live click-through test of the update button**, not just
-  the direct logic tests Steps 33-34 ran. A real `Agora Setup 0.0.0.exe`
-  (now with everything, including Step 34's changes) exists in
-  `frontend/release/` - every attempt to launch the packaged app from the
-  automated tool environment itself exited before `main.cjs` ever logged a
-  line, while the exact same portable build's own `main.log` shows it
-  running fine for the real user on this same machine in real sessions.
-  Needs an actual human (or a properly set up Playwright/CDP harness,
-  which this project doesn't have yet) to click through: a manual check,
-  the Local Folder source against a folder with a genuine newer build in
-  it, and - if it's safe to actually let it fire - the new fully-automatic
-  install path with both settings turned on.
+- [ ] **A real, live click-through of the actual download/install/relaunch**
+  (narrower than before - see BUILD_LOG Step 45, which already confirmed the
+  *detection* half live: the real GitHub release-check, against this
+  project's own actual first published release, genuinely finds it and
+  reports the right version). What's still unverified is everything past
+  that point - clicking Install, watching it actually download the real
+  asset, run the installer, and relaunch into the new version - since
+  every attempt to launch the packaged app from the automated tool
+  environment itself exited before `main.cjs` ever logged a line, while
+  the exact same portable build's own `main.log` shows it running fine for
+  the real user on this same machine in real sessions. Needs an actual
+  human (or a properly set up Playwright/CDP harness, which this project
+  doesn't have yet) to click through: Install → download → run installer →
+  relaunch, the Local Folder source against a folder with a genuine newer
+  build in it, and - if it's safe to actually let it fire - the
+  fully-automatic install path with both settings turned on.
 
 ## Desktop design-reference audit (2026-10-06, see BUILD_LOG Step 42), Round 2
 
