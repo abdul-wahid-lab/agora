@@ -12,6 +12,21 @@ export function isVideoFile(filename) {
   return VIDEO_EXTS.has(ext);
 }
 
+// A voice note recorded via MediaRecorder is, on Chromium (and therefore
+// Electron), always a .webm container regardless of whether the stream is
+// audio-only - the exact same extension VIDEO_EXTS above already claims
+// for real video files. Rather than guessing from the container, every
+// voice note this app sends uses this one exact, fixed filename (see
+// api.py's send_voice_message), checked before isVideoFile anywhere a
+// message bubble decides how to render a file - a deliberate choice over
+// adding a real "kind" column to the files table just to disambiguate one
+// feature's own output.
+export const VOICE_MESSAGE_FILENAME = "Voice message.webm";
+
+export function isVoiceMessage(filename) {
+  return filename === VOICE_MESSAGE_FILENAME;
+}
+
 export const EXECUTABLE_EXTS = new Set(["apk", "exe", "msi", "bat", "cmd", "com", "sh", "jar", "appimage", "ps1"]);
 
 export function isExecutableFile(filename) {

@@ -92,6 +92,19 @@ async def main() -> None:
         except ConnectionError:
             print("PASS: an unreachable peer_id raises ConnectionError, not a hang")
 
+        # 5. A real concurrency case, not a hypothetical one: ConversationPane's
+        # header and InfoSidebar both render a PeerAvatar for the same peer_id
+        # on the same page, so two near-simultaneous fetches for one peer_id
+        # genuinely happen with no cache yet. Both must actually succeed, not
+        # one of them silently time out because the second request's Future
+        # replaced the first's in _waiters.
+        results = await asyncio.gather(
+            bob_exchange.fetch(alice_disc.peer_id, timeout=5),
+            bob_exchange.fetch(alice_disc.peer_id, timeout=5),
+        )
+        assert results[0] == fake_jpeg and results[1] == fake_jpeg, "both concurrent fetches for the same peer_id must succeed with the real bytes"
+        print("PASS: two concurrent fetches for the same peer_id both succeed (no lost waiter)")
+
         print("\nALL PHOTO SYNC TESTS PASSED")
     finally:
         await alice_msg.stop()

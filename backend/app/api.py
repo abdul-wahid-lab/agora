@@ -26,6 +26,7 @@ import asyncio
 import hashlib
 import os
 import socket
+import uuid
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
@@ -687,6 +688,50 @@ async def send_file(body: SendFileBody):
     # Fire it in the background; the offer row appears in GET /files almost
     # immediately, and /events pushes every status change as it happens.
     asyncio.create_task(file_transfer.send_file(body.peer_id, body.path))
+    return {"status": "offer_sending"}
+
+
+# A voice note is recorded client-side (getUserMedia + MediaRecorder) with
+# nothing ever written to disk by the browser itself, unlike every other
+# attachment this app sends - those all start from a real local path a
+# native file picker (or, in dev-browser mode, a typed-in path) already
+# handed over. This is the one new endpoint that gap needs: raw bytes in
+# (same shape as PUT /me/photo), written to disk exactly once right here,
+# then handed to the exact same send_file()/send_group_file() every other
+# transfer already goes through - no new wire protocol, no special-casing
+# anywhere past this point.
+VOICE_OUTBOX_DIR = os.path.join(DOWNLOADS_DIR, "voice_outbox")
+
+
+@app.post("/files/send-voice")
+async def send_voice_message(request: Request, peer_id: Optional[str] = None, group_id: Optional[str] = None):
+    if not peer_id and not group_id:
+        raise HTTPException(400, "peer_id or group_id required")
+    data = await request.body()
+    if not data:
+        raise HTTPException(400, "empty recording")
+    # Every voice note is sent under this exact filename, "Voice
+    # message.webm", on purpose - see lib/fileTypes.js's isVoiceMessage for
+    # why a fixed name, not a real "kind" column, is what tells it apart
+    # from a real video on the receiving end (both are .webm containers,
+    # Chromium's only reliable MediaRecorder output regardless of whether
+    # the stream is audio-only). send_file() below uses this file's own
+    # on-disk name as the transferred filename, so uniqueness across
+    # multiple notes in the same chat has to come from a per-note
+    # subdirectory instead of the leaf name itself.
+    note_dir = os.path.join(VOICE_OUTBOX_DIR, uuid.uuid4().hex)
+    os.makedirs(note_dir, exist_ok=True)
+    path = os.path.join(note_dir, "Voice message.webm")
+    with open(path, "wb") as f:
+        f.write(data)
+    # keep_sender_copy=True is what lets the sender play back their own
+    # voice note too, same as the receiver can - see send_file's own
+    # comment for why this is safe specifically here (a permanent,
+    # app-owned path) and not the default for every other sent file.
+    if group_id:
+        asyncio.create_task(group_service.send_group_file(group_id, path, keep_sender_copy=True))
+    else:
+        asyncio.create_task(file_transfer.send_file(peer_id, path, keep_sender_copy=True))
     return {"status": "offer_sending"}
 
 

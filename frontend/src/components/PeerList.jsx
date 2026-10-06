@@ -108,8 +108,8 @@ export default function PeerList({ peers, selected, onSelect, onRescan, onOpenQr
                 <PeerAvatar peerId={p.peer_id} name={p.name} size={38} bg={bg} text={text} fontSize={13} />
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 14 }}>{p.name}</div>
-                <div className="mono" style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
+                <div style={{ fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
+                <div className="mono" style={{ fontSize: 11.5, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {p.address}:{p.port} · via {p.source}
                 </div>
               </div>

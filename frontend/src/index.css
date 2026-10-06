@@ -32,6 +32,10 @@
 
 * { box-sizing: border-box; }
 
+html, body {
+  height: 100%;
+}
+
 body {
   margin: 0;
   background: var(--ground);
@@ -48,8 +52,17 @@ button {
   cursor: pointer;
 }
 
+/* height: 100% here (matching html/body above), not min-height: 100vh -
+   mixing a vh-based min-height on #root with App.jsx's own inner div
+   fixed at height: 100vh is two independent viewport-height calculations
+   that don't always agree down to the sub-pixel at every zoom level/DPI
+   scale, which is exactly the kind of mismatch that lets the bottom of a
+   fixed-height flex column (the composer bar's Send button, in a real
+   report) render a sliver past the actual viewport edge. A plain
+   percentage chain (html -> body -> #root, all 100%) has nothing to
+   disagree with itself about. */
 #root {
-  min-height: 100vh;
+  height: 100%;
 }
 
 /* Named to match the design file's own animation names (agRing, agPulse,

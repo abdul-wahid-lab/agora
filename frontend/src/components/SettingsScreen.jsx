@@ -24,19 +24,47 @@ export default function SettingsScreen({ me }) {
   if (view === "about") return <AboutView onBack={() => setView("home")} />;
 
   async function handleChoosePhoto() {
-    const path = await window.electronAPI.pickFile("photo");
-    if (!path) return;
-    const dataUrl = await window.electronAPI.setAvatarPhoto(path);
-    if (!dataUrl) {
-      window.alert("Couldn't use that image (too large, or not a supported photo format).");
+    if (hasElectron) {
+      const path = await window.electronAPI.pickFile("photo");
+      if (!path) return;
+      const dataUrl = await window.electronAPI.setAvatarPhoto(path);
+      if (!dataUrl) {
+        window.alert("Couldn't use that image (too large, or not a supported photo format).");
+        return;
+      }
+      setPhoto(dataUrl);
+      api.setMyPhoto(dataUrl).catch(() => {});
       return;
     }
-    setPhoto(dataUrl);
-    api.setMyPhoto(dataUrl).catch(() => {});
+    // Plain-browser fallback - this used to just be disabled outright with
+    // "Only available in the desktop app," which blocked testing the real
+    // peer-photo-sync feature (photos.py) from a plain browser tab, the
+    // actual dev/test workflow this app explicitly supports. A real <input
+    // type="file"> plus FileReader produces the identical data: URL shape
+    // Electron's own path already returns, so setPhoto/api.setMyPhoto below
+    // don't need to know or care which source it came from. Doesn't persist
+    // to disk the way the Electron path does - there's no main process here
+    // to own that - just for the life of this tab, which is the right
+    // tradeoff for a dev/test fallback, not a silent limitation to hide.
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        const dataUrl = reader.result;
+        setPhoto(dataUrl);
+        api.setMyPhoto(dataUrl).catch(() => {});
+      };
+      reader.readAsDataURL(file);
+    };
+    input.click();
   }
 
   async function handleRemovePhoto() {
-    await window.electronAPI.clearAvatarPhoto();
+    if (hasElectron) await window.electronAPI.clearAvatarPhoto();
     setPhoto(null);
     api.clearMyPhoto().catch(() => {});
   }
@@ -61,9 +89,8 @@ export default function SettingsScreen({ me }) {
         <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
           <button
             onClick={handleChoosePhoto}
-            disabled={!hasElectron}
-            title={hasElectron ? undefined : "Only available in the desktop app"}
-            style={{ padding: "7px 12px", borderRadius: 10, background: "var(--surface-2)", border: "none", fontSize: 12, fontWeight: 600, color: hasElectron ? "var(--text-strong)" : "var(--text-3)", cursor: hasElectron ? "pointer" : "not-allowed" }}
+            title={hasElectron ? undefined : "Works here too, but won't be saved after this tab closes - only the desktop app keeps it permanently"}
+            style={{ padding: "7px 12px", borderRadius: 10, background: "var(--surface-2)", border: "none", fontSize: 12, fontWeight: 600, color: "var(--text-strong)", cursor: "pointer" }}
           >
             {photo ? "Change photo" : "Choose photo"}
           </button>

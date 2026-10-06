@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import ScreenSharePickerModal from "./ScreenSharePickerModal";
 
 // Rendered at the App level (not inside CallsScreen) so an incoming call is
@@ -7,12 +7,14 @@ import ScreenSharePickerModal from "./ScreenSharePickerModal";
 // ever broadcast once; if nothing was listening yet, the call was lost).
 //
 // Matches design screens 10.4 (incoming call - a small floating toast, not
-// a full-screen takeover) and 10.9 (the call window itself - dark,
-// checkerboard-pattern video tiles, a floating control pill). 10.9 shows a
-// 4-person mesh call; this adapts the same visual language to the 1:1 case
-// our backend actually supports - one remote tile, one local PiP corner -
-// rather than porting group-call chrome (participant list, mesh topology
-// info) that has nothing real behind it yet.
+// a full-screen takeover) and 10.9's dark, checkerboard-pattern video tiles
+// and floating control pill. The actual tile layout below is Google Meet-
+// style, not a fixed "one big remote tile, one local PiP corner" the design
+// mockup itself shows: both sides can share a screen at the same time now
+// (see useCall.js), so there can genuinely be up to three real sources at
+// once in a 1:1 call (their camera, their screen, your camera) - whichever
+// one is "pinned" fills the frame, the rest sit as small clickable
+// thumbnails, and clicking one pins it instead.
 function fmtElapsed(s) {
   const m = Math.floor(s / 60);
   const sec = s % 60;
@@ -20,6 +22,8 @@ function fmtElapsed(s) {
 }
 
 const stripePattern = (c1, c2) => `repeating-linear-gradient(135deg, ${c1} 0px, ${c1} 10px, ${c2} 10px, ${c2} 20px)`;
+
+const quickReplyStyle = { flex: 1, padding: "7px 0", borderRadius: 10, background: "rgba(249,241,232,0.1)", color: "#d8cabf", fontSize: 11.5, fontWeight: 600, border: "none" };
 
 export default function CallOverlay({
   call,
@@ -37,6 +41,8 @@ export default function CallOverlay({
   remoteScreenVideoRef,
   onAccept,
   onDecline,
+  onQuickReply,
+  onDeclineToMessage,
   onHangUp,
   onCancel,
   onToggleMute,
@@ -48,6 +54,19 @@ export default function CallOverlay({
   onStopScreenShare,
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Google Meet-style tile picking: whichever tile is "pinned" fills the
+  // main view, every other available tile (the other person's camera or
+  // screen, your own camera) sits in a clickable thumbnail row - null means
+  // "no explicit choice yet, use the sensible default" (see pinnedId below).
+  const [explicitPin, setExplicitPin] = useState(null);
+
+  // A screen share starting grabs focus automatically, same as Meet - but
+  // only the moment it starts, not on every render, so clicking away to a
+  // different tile afterward still sticks instead of being fought back to
+  // the screen every time this component re-renders.
+  useEffect(() => {
+    if (remoteSharingScreen) setExplicitPin("remoteScreen");
+  }, [remoteSharingScreen]);
 
   if (!call) return null;
 
@@ -95,6 +114,22 @@ export default function CallOverlay({
             Decline
           </button>
         </div>
+        {/* Design screen 10.4's quick replies - decline with a reason
+            instead of just going silent. "Can't talk now"/"Two minutes"
+            send that exact line as a normal chat message right after
+            declining; "Message" just opens the conversation so the caller
+            can type their own reply instead of a canned one. */}
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => onQuickReply?.("Can't talk right now")} style={quickReplyStyle}>
+            Can't talk now
+          </button>
+          <button onClick={() => onQuickReply?.("Can I call you back in two minutes?")} style={quickReplyStyle}>
+            Two minutes
+          </button>
+          <button onClick={onDeclineToMessage} style={quickReplyStyle}>
+            Message
+          </button>
+        </div>
       </div>
     );
   }
@@ -102,6 +137,42 @@ export default function CallOverlay({
   // Outgoing-ringing and in_call both use the dark call window - the only
   // difference is whether the remote tile shows "Calling..." or a live tile.
   const isConnected = call.status === "in_call";
+
+  // Every real source this call could possibly show right now, Meet-style -
+  // not just "the" one shared screen chosen for you. Your own screen share
+  // deliberately isn't one of these: watching your own screen played back
+  // at you isn't a real thing Meet does either, "Stop sharing" already
+  // being highlighted in the control pill is the real indicator that it's
+  // live.
+  const tiles = [
+    {
+      id: "remoteMain",
+      label: isConnected ? peerName : `Calling ${peerName}…`,
+      content:
+        call.media === "video" && isConnected ? (
+          <video autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover" }} ref={remoteVideoRef} />
+        ) : (
+          <AvatarTile name={peerName} />
+        ),
+    },
+  ];
+  if (remoteSharingScreen) {
+    tiles.push({
+      id: "remoteScreen",
+      label: `${peerName}'s screen`,
+      content: <video autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "contain", background: "#1c1512" }} ref={remoteScreenVideoRef} />,
+    });
+  }
+  if (call.media === "video" && isConnected) {
+    tiles.push({
+      id: "localCamera",
+      label: "You",
+      content: <video autoPlay playsInline muted style={{ width: "100%", height: "100%", objectFit: "cover" }} ref={localVideoRef} />,
+    });
+  }
+  const pinnedId = tiles.some((t) => t.id === explicitPin) ? explicitPin : "remoteMain";
+  const mainTile = tiles.find((t) => t.id === pinnedId);
+  const thumbnailTiles = tiles.filter((t) => t.id !== pinnedId);
 
   return (
     <div
@@ -135,48 +206,60 @@ export default function CallOverlay({
             borderRadius: 18,
             background: stripePattern("#5a4d45", "#524540"),
             border: "1px solid rgba(249,241,232,0.12)",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 8,
             position: "relative",
+            overflow: "hidden",
           }}
         >
-          {remoteSharingScreen ? (
-            // The shared screen becomes the main tile regardless of whether
-            // this is an audio or video call - screen sharing was scoped to
-            // work from either, on purpose. objectFit:contain here, not
-            // cover like the camera tile below - cropping someone's screen
-            // would cut off real content, not just background.
-            <video ref={remoteScreenVideoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "contain", borderRadius: 18, background: "#1c1512" }} />
-          ) : call.media === "video" && isConnected ? (
-            <video ref={remoteVideoRef} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: "cover", borderRadius: 18 }} />
-          ) : (
-            <>
-              <div style={{ width: 84, height: 84, borderRadius: 99, background: "var(--avatar-self)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Instrument Serif, serif", fontSize: 32 }}>
-                {peerName[0]?.toUpperCase() || "?"}
+          {/* Every tile that currently exists renders here, always, at this
+              same tree position - only its size/position style changes
+              between "pinned" (fills the frame) and "thumbnail" (a small
+              clickable box in the corner). Moving a tile to a *different*
+              parent element on pin/unpin, instead of just restyling it in
+              place like this, is exactly what caused the "stuck on last
+              frame" bug: React would mount a brand-new <video> each time
+              instead of reusing the one real element a stream was already
+              attached to. */}
+          {tiles.map((tile) => {
+            const isPinned = tile.id === pinnedId;
+            return (
+              <div
+                key={tile.id}
+                onClick={() => !isPinned && setExplicitPin(tile.id)}
+                style={
+                  isPinned
+                    ? { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }
+                    : {
+                        position: "absolute",
+                        bottom: 14,
+                        right: 14 + thumbnailTiles.indexOf(tile) * 154,
+                        width: 140,
+                        height: 100,
+                        borderRadius: 12,
+                        overflow: "hidden",
+                        border: "2px solid rgba(249,241,232,0.3)",
+                        background: "#2a2320",
+                        cursor: "pointer",
+                        zIndex: 5,
+                      }
+                }
+              >
+                {tile.content}
+                {!isPinned && (
+                  <div style={{ position: "absolute", left: 6, bottom: 4, font: '500 10px/1 "Hanken Grotesk", sans-serif', color: "#f7e8dc", textShadow: "0 1px 3px rgba(0,0,0,0.6)" }}>
+                    {tile.label}
+                  </div>
+                )}
               </div>
-              <div style={{ font: '500 13px/1 "Hanken Grotesk", sans-serif', color: "#e6d5c8", fontWeight: 600 }}>{isConnected ? peerName : `Calling ${peerName}…`}</div>
-            </>
-          )}
+            );
+          })}
+
           <audio ref={remoteAudioRef} autoPlay hidden />
 
-          {isConnected && (remoteSharingScreen || (call.media === "video" && !remoteSharingScreen)) && (
-            <div style={{ position: "absolute", left: 14, bottom: 14, display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: 99, background: "rgba(26,21,19,0.6)" }}>
+          {isConnected && (
+            <div style={{ position: "absolute", left: 14, bottom: 14, display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", borderRadius: 99, background: "rgba(26,21,19,0.6)", zIndex: 5 }}>
               <span style={{ width: 7, height: 7, borderRadius: 99, background: "var(--accent)" }} />
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#f7e8dc" }}>{remoteSharingScreen ? `${peerName}'s screen` : peerName}</span>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "#f7e8dc" }}>{mainTile.label}</span>
             </div>
-          )}
-
-          {call.media === "video" && isConnected && (
-            <video
-              ref={localVideoRef}
-              autoPlay
-              playsInline
-              muted
-              style={{ position: "absolute", bottom: 14, right: 14, width: 140, borderRadius: 12, border: "2px solid rgba(249,241,232,0.2)", background: "#2a2320" }}
-            />
           )}
         </div>
       </div>
@@ -239,6 +322,21 @@ export default function CallOverlay({
       )}
 
       {pickerOpen && <ScreenSharePickerModal onChoose={handleChooseSource} onCancel={() => setPickerOpen(false)} />}
+    </div>
+  );
+}
+
+// The "no real video for this tile" fallback - an audio-only call, or a
+// video call before the remote camera track has arrived yet. Fills
+// whatever size its wrapper currently is, same as a real <video> would,
+// so it looks right whether it's the pinned main tile or a small
+// thumbnail.
+function AvatarTile({ name }) {
+  return (
+    <div style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, background: "#453a34" }}>
+      <div style={{ width: 84, height: 84, borderRadius: 99, background: "var(--avatar-self)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "Instrument Serif, serif", fontSize: 32 }}>
+        {name[0]?.toUpperCase() || "?"}
+      </div>
     </div>
   );
 }

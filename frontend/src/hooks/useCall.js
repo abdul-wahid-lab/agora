@@ -34,6 +34,18 @@ export function useCall() {
   // lib/webrtc.js's own comment for why (no renegotiation, no new wire
   // messages, works whether this call is audio or video).
   const screenTransceiverRef = useRef(null);
+  // The screen transceiver's real, negotiated mid - sent explicitly from
+  // the offering side to the answering side as a plain extra field on the
+  // call offer (the backend relays `sdp` as an opaque dict either way, see
+  // api.py's CallOfferBody - this costs nothing to add). Replaces inferring
+  // "the screen slot" by assuming it's always the last video-kind
+  // transceiver in creation order: that inference turned out not to hold
+  // reliably in real two-browser testing (found showing the camera feed in
+  // the screen slot, or nothing at all, on the answering side specifically)
+  // - mid is the one value WebRTC itself guarantees stays identical for the
+  // same m-line on both the offer and the answer, so matching on it instead
+  // is unambiguous regardless of transceiver creation order on either side.
+  const screenMidRef = useRef(null);
   const screenStreamRef = useRef(null); // this device's own captured screen, while sharing
   const remoteScreenStreamRef = useRef(null); // the peer's shared screen, while they're sharing
   // How the *other* side finds out sharing started/stopped. The original
@@ -66,6 +78,7 @@ export function useCall() {
     screenStreamRef.current = null;
     remoteScreenStreamRef.current = null;
     screenTransceiverRef.current = null;
+    screenMidRef.current = null;
     screenChannelRef.current?.close();
     screenChannelRef.current = null;
     if (localVideoRef.current) localVideoRef.current.srcObject = null;
@@ -161,6 +174,20 @@ export function useCall() {
   // direct assignment in the event handler would silently do nothing. Every
   // stream is kept in a ref regardless, and this effect re-applies it once
   // the elements exist.
+  //
+  // remoteSharingScreen is also a real dependency here, not just the two
+  // above - a live report found the remote camera tile "stuck" on the last
+  // frame of a screen share that had already ended. CallOverlay's ternary
+  // swaps between a <video ref={remoteScreenVideoRef}> and a
+  // <video ref={remoteVideoRef}> at the exact same tree position, so React
+  // reuses the same underlying DOM element across that switch rather than
+  // creating a new one - srcObject is a live property this effect sets
+  // imperatively, not a declarative JSX attribute, so reusing the node also
+  // reuses whatever MediaStream was last assigned to it. Without
+  // remoteSharingScreen in this dependency list, nothing ever told that
+  // reused element to point back at the real camera stream once sharing
+  // stopped, so it just kept rendering the screen share's final, frozen
+  // frame forever.
   useEffect(() => {
     if (call?.status !== "in_call") return;
     if (call.media === "video" && localVideoRef.current && localStreamRef.current) {
@@ -170,7 +197,7 @@ export function useCall() {
     if (remoteTarget && remoteStreamRef.current) {
       remoteTarget.srcObject = remoteStreamRef.current;
     }
-  }, [call?.status, call?.media]);
+  }, [call?.status, call?.media, remoteSharingScreen]);
 
   // Same re-attach reasoning as above, for the shared-screen tile
   // specifically: it only mounts once remoteSharingScreen flips true (see
@@ -207,12 +234,15 @@ export function useCall() {
   function setupPeerConnection(media) {
     const pc = new RTCPeerConnection(RTC_CONFIG);
     pc.ontrack = (e) => {
-      // The screen-share slot is a real, separate transceiver, never mixed
-      // into the same stream as the camera/mic - see findScreenTransceiver's
-      // own comment for why comparing against it (recomputed fresh, not a
-      // stale stored reference) correctly identifies this event regardless
-      // of which transceiver's track fires ontrack first.
-      if (e.transceiver === findScreenTransceiver(pc)) {
+      // Matched by mid against screenMidRef (set before setRemoteDescription
+      // ever runs - see acceptCall/placeCall), not inferred by transceiver
+      // position - real two-browser testing showed the position-based
+      // inference didn't hold reliably. Falls back to the old position-
+      // based findScreenTransceiver only if screenMidRef was somehow never
+      // set (shouldn't happen on a build that sends screenMid, but better
+      // than silently misrouting every track if it ever is).
+      const isScreen = screenMidRef.current != null ? e.transceiver.mid === screenMidRef.current : e.transceiver === findScreenTransceiver(pc);
+      if (isScreen) {
         remoteScreenStreamRef.current = new MediaStream([e.track]);
         return;
       }
@@ -266,9 +296,12 @@ export function useCall() {
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      // Real and stable only once a local description has actually been
+      // set - mid is assigned by that step, not at addTransceiver time.
+      screenMidRef.current = screenTransceiverRef.current.mid;
       await waitForIceGatheringComplete(pc);
 
-      const res = await api.callOffer(peerId, pc.localDescription.toJSON(), media);
+      const res = await api.callOffer(peerId, { ...pc.localDescription.toJSON(), screenMid: screenMidRef.current }, media);
       if (res.status === "failed") {
         cleanupCall();
         setError(`Couldn't reach that peer: ${res.reason}`);
@@ -293,22 +326,37 @@ export function useCall() {
       pcRef.current = pc;
       localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
 
-      await pc.setRemoteDescription(incoming.offerSdp);
-      // The answering side never calls addScreenTransceiver itself (see
-      // findScreenTransceiver's own comment in lib/webrtc.js) - calling it
-      // here before setRemoteDescription, as this used to, pre-creates a
-      // second, separate unassociated video transceiver that real testing
-      // showed does not reliably end up being the one setRemoteDescription
-      // actually pairs with the offer's extra m-line. That left this
-      // device's "screen" sender pointed at a transceiver that was never
-      // really part of the negotiated connection: replaceTrack() on it
-      // succeeded locally with no error, "sharing" turned on in the UI, but
-      // no frame ever reached the peer - the answering side could never
-      // successfully share while the offering side always could. Finding
-      // the transceiver the offer's own extra m-line actually created,
-      // after setRemoteDescription has processed it, is what findScreenTransceiver
-      // exists for, and is guaranteed to be the real, negotiated slot.
-      screenTransceiverRef.current = findScreenTransceiver(pc);
+      // Read, and critically, stored into screenMidRef, BEFORE
+      // setRemoteDescription runs below - ontrack can fire as part of
+      // processing the remote offer itself, so screenMidRef has to already
+      // be correct by then, not set afterward. The mid comes straight from
+      // the offer the caller sent (see placeCall) - a real, explicit value
+      // both sides agree on, not inferred from transceiver creation order
+      // the way this used to work (see git history: that inference is what
+      // let the answering side's screen end up shown as the camera feed, or
+      // not at all, found by real two-browser testing).
+      screenMidRef.current = incoming.offerSdp?.screenMid ?? null;
+      await pc.setRemoteDescription({ type: incoming.offerSdp.type, sdp: incoming.offerSdp.sdp });
+      screenTransceiverRef.current = screenMidRef.current != null ? pc.getTransceivers().find((t) => t.mid === screenMidRef.current) : findScreenTransceiver(pc);
+      // The real bug, found by actually driving two real browsers end to
+      // end and logging every transceiver's direction (not just reasoning
+      // about the SDP on paper): the camera/audio m-lines come back
+      // "sendrecv" here because this side already had its own addTrack()
+      // calls queued up before setRemoteDescription ran, giving the browser
+      // an existing local transceiver to merge the offer into - but the
+      // screen m-line has no such local counterpart (nothing was ever
+      // addTrack()'d to it, by design - it starts empty), so the browser
+      // auto-creates it as "recvonly" by default. That's not a signaling
+      // mismatch, it's a real runtime restriction: a sender on a recvonly
+      // transceiver silently never transmits, no matter what replaceTrack()
+      // puts on it - which is exactly why only the call's *offerer* (whose
+      // own addTransceiver call asked for "sendrecv" explicitly) was ever
+      // able to share a screen, and the answerer's own share always went
+      // out as nothing. Flipping it back to sendrecv here, before this
+      // side's own answer is created, fixes it for both directions without
+      // any renegotiation - this is still the one and only offer/answer
+      // exchange the call ever does.
+      if (screenTransceiverRef.current) screenTransceiverRef.current.direction = "sendrecv";
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await waitForIceGatheringComplete(pc);
@@ -327,6 +375,7 @@ export function useCall() {
     const incoming = callRef.current;
     cleanupCall();
     setCall(null);
+    setError("");
     if (incoming) api.callEnd(incoming.callId, "declined").catch(() => {});
   }
 
@@ -389,6 +438,15 @@ export function useCall() {
     sendOnScreenChannel({ type: "screen_share_cancel" });
   }
 
+  // Both sides can share at once, Google Meet-style - the one pre-negotiated
+  // screen-video transceiver is a real bidirectional RTP pair (one sender,
+  // one receiver, independent of each other), so my own outgoing screen and
+  // the peer's incoming one were never actually in conflict at the
+  // transport level - that was only ever an application-level policy this
+  // function used to enforce by stopping your own share the moment you
+  // accepted someone else's. The explicit accept/decline step itself stays
+  // exactly as it was: this is about whether two *simultaneous* shares are
+  // allowed, not about removing the "ask first" consent.
   function acceptScreenShareRequest() {
     setIncomingShareRequest(false);
     sendOnScreenChannel({ type: "screen_share_accept" });
@@ -407,7 +465,19 @@ export function useCall() {
       const stream = await getScreenStream();
       const track = stream.getVideoTracks()[0];
       screenStreamRef.current = stream;
-      await screenTransceiverRef.current.sender.replaceTrack(track);
+      // Re-resolved fresh right here, by mid when we have one (the real,
+      // explicit identifier - see screenMidRef's own comment), rather than
+      // trusting whatever screenTransceiverRef was set to back when the
+      // call first connected - belt and suspenders against it ever drifting
+      // from the connection's real current state by the time an actual
+      // share starts, which can be arbitrarily later in a call.
+      const pc = pcRef.current;
+      const transceiver = pc ? (screenMidRef.current != null ? pc.getTransceivers().find((t) => t.mid === screenMidRef.current) : findScreenTransceiver(pc)) : null;
+      if (!transceiver) {
+        throw new Error("no screen transceiver found on this connection");
+      }
+      screenTransceiverRef.current = transceiver;
+      await transceiver.sender.replaceTrack(track);
       await sendOnScreenChannel({ type: "screen_share_start" });
       // The browser's own native "you are sharing your screen" bar has a
       // real Stop button - this is the only way to find out if the user
@@ -417,7 +487,11 @@ export function useCall() {
     } catch (e) {
       // NotAllowedError: the user cancelled the source picker, or
       // Electron's own handler declined - not a real error to surface.
-      if (e.name !== "NotAllowedError") setError("Couldn't start screen sharing.");
+      // Anything else (including the "no screen transceiver found" case
+      // above) is a real failure worth a visible, specific message rather
+      // than silently leaving the other side waiting on a share that's
+      // never coming.
+      if (e.name !== "NotAllowedError") setError(e.message === "no screen transceiver found on this connection" ? "Couldn't find the screen-sharing connection slot - try leaving and rejoining the call." : "Couldn't start screen sharing.");
       // The other side already accepted and is waiting for a tile that,
       // after a cancelled/failed picker, is now never actually coming.
       sendOnScreenChannel({ type: "screen_share_stop" });

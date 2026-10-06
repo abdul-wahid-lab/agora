@@ -3,12 +3,15 @@ import { api, connectEvents } from "../api";
 import { paletteFor, initials } from "../lib/avatar";
 import { getChatTheme } from "../lib/chatTheme";
 import { useIsPeerBlocked } from "../hooks/useIsPeerBlocked";
+import DropdownMenu from "./DropdownMenu";
 import SecurityGate from "./SecurityGate";
 import FileOpenActions from "./FileOpenActions";
 import ImagePreview from "./ImagePreview";
 import VideoPreview from "./VideoPreview";
+import VoiceBubblePlayer from "./VoiceBubblePlayer";
+import VoiceRecorder from "./VoiceRecorder";
 import PeerAvatar from "./PeerAvatar";
-import { isImageFile, isVideoFile, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
+import { isImageFile, isVideoFile, isVoiceMessage, EXECUTABLE_EXTS, extStyle, formatFileSize as formatSize } from "../lib/fileTypes";
 import { usePeers } from "../hooks/usePeers";
 import { useGroups } from "../hooks/useGroups";
 import { useConversations } from "../hooks/useConversations";
@@ -37,7 +40,7 @@ function dayLabel(ts) {
 // stores (see storage.py) but read as one timeline here, sorted by time -
 // that interleaving is what the design shows, even though the underlying
 // APIs stay separate.
-export default function ConversationPane({ peer, online = true, onOpenCall, emptyState, searchOpen = false, onCloseSearch }) {
+export default function ConversationPane({ peer, online = true, onOpenCall, onOpenFiles, onOpenSearch, onExportConversation, emptyState, searchOpen = false, onCloseSearch }) {
   const [messages, setMessages] = useState([]);
   const [files, setFiles] = useState([]);
   const [calls, setCalls] = useState([]);
@@ -46,6 +49,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
   const [filePickerOpen, setFilePickerOpen] = useState(false);
   const [filePath, setFilePath] = useState("");
   const [attachMenuOpen, setAttachMenuOpen] = useState(false);
+  const [voiceActive, setVoiceActive] = useState(false);
   const hasNativePicker = Boolean(window.electronAPI?.pickFile);
   const [gateFile, setGateFile] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -220,6 +224,49 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
     api.files(peer.peer_id).then(setFiles).catch(() => {});
   }
 
+  // Same actions TitleBar.jsx's top "Conversation" menu already offers,
+  // just reachable right from the header's own "..." button too (design
+  // screen 10.7) instead of only the menu bar - this component already has
+  // peer/isBlocked/blockVersion in scope, so these are real local
+  // implementations rather than reaching back up into App.jsx for
+  // everything the way Export (which operates on App's own selected-peer
+  // state regardless of what's rendered) still does.
+  async function handleClearChat() {
+    if (!window.confirm(`Clear your entire chat history with ${peer.name}? This only clears it on this device, it can't be undone.`)) return;
+    await api.clearConversation(peer.peer_id).catch(() => {});
+    setMessages([]);
+    setFiles([]);
+  }
+
+  async function handleToggleBlock() {
+    if (isBlocked) {
+      await api.unblockPeer(peer.peer_id).catch(() => {});
+    } else {
+      if (!window.confirm(`Block ${peer.name}? They won't be able to message, call, or send you files until you unblock them.`)) return;
+      await api.blockPeer(peer.peer_id, peer.name).catch(() => {});
+    }
+    setBlockVersion((v) => v + 1);
+  }
+
+  // VoiceRecorder owns the whole hold/slide-to-cancel/lock/review state
+  // machine itself (see that component) - this just does the actual send
+  // once the user presses its own Send button, past the one new endpoint
+  // that gets the clip from an in-memory Blob onto disk in the first
+  // place (see api.js's sendVoiceMessage for why that needs a real
+  // endpoint instead of reusing sendFile's path-based one). A non-empty
+  // note from the review screen's optional text field rides along as a
+  // perfectly ordinary follow-up text message - there's no "caption on a
+  // file" concept anywhere else in this app to extend instead, and a
+  // second plain message right after accomplishes the same thing in the
+  // timeline without inventing one.
+  function handleSendVoiceNote(blob, note) {
+    api
+      .sendVoiceMessage(peer.peer_id, blob)
+      .then(() => setTimeout(refreshFiles, 400))
+      .catch(() => {});
+    if (note) api.sendMessage(peer.peer_id, note).catch(() => {});
+  }
+
   function handleAcceptClick(file) {
     if (EXECUTABLE_EXTS.has((file.filename.split(".").pop() || "").toLowerCase())) {
       setGateFile(file);
@@ -285,26 +332,59 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
           <PeerAvatar peerId={peer.peer_id} name={peer.name} size={38} bg={bg} text={text} fontSize={13} />
         </span>
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ fontWeight: 600, fontSize: 15.5 }}>{peer.name}</div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ width: 6, height: 6, borderRadius: 99, background: online ? "var(--accent)" : "var(--text-3)" }} />
+          <div style={{ fontWeight: 600, fontSize: 15.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{peer.name}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+            <span style={{ width: 6, height: 6, borderRadius: 99, background: online ? "var(--accent)" : "var(--text-3)", flexShrink: 0 }} />
             {/* Peer-to-peer traffic really is end-to-end encrypted now (see
                 README's own Security posture section) - this line is just
                 describing the connection topology (direct, no server),
                 deliberately not claiming encryption here since that's not
-                what this specific line is about either way. */}
-            <span style={{ fontSize: 12, color: "var(--text-2)", fontWeight: 500 }}>
+                what this specific line is about either way.
+                overflow/textOverflow/whiteSpace here is a real fix, not
+                decoration: without it, a narrow window (two tabs side by
+                side is the exact case that surfaced this) wrapped this line
+                across 2-3 lines instead of the header's fixed 62px height,
+                visibly colliding with the avatar ring and the Call/Video
+                buttons rather than cleanly truncating. */}
+            <span style={{ fontSize: 12, color: "var(--text-2)", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
               {online ? "On this network · direct, device-to-device" : "Not on this network right now · showing saved history"}
             </span>
           </div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        {/* flexShrink: 1 + minWidth: 0 + its own overflowX here (not
+            flexShrink: 0, the original value) is a real fix, not
+            decoration - found live at a narrow window width: with this
+            group rigid, the 4 buttons' combined width simply didn't fit
+            next to even a fully-ellipsized peer name, and since nothing
+            here could shrink, the whole header (and with it, the whole
+            center column) was forced wider than the viewport, scrolling
+            the entire page horizontally instead of just this one row.
+            Each button keeps its own flexShrink: 0 (see pillButtonStyle)
+            so they stay full-size and legible rather than squishing -
+            only this container scrolls, in the rare case they still
+            don't all fit. */}
+        <div style={{ display: "flex", gap: 8, flexShrink: 1, minWidth: 0, overflowX: "auto", scrollbarWidth: "none" }}>
           <button onClick={() => onOpenCall(peer.peer_id, "audio")} disabled={!online} title={online ? undefined : "Not reachable right now"} style={{ ...pillButtonStyle, opacity: online ? 1 : 0.5 }}>
             Call
           </button>
           <button onClick={() => onOpenCall(peer.peer_id, "video")} disabled={!online} title={online ? undefined : "Not reachable right now"} style={{ ...pillButtonStyle, opacity: online ? 1 : 0.5 }}>
             Video
           </button>
+          {onOpenFiles && (
+            <button onClick={() => onOpenFiles(peer.peer_id)} style={pillButtonStyle}>
+              Files
+            </button>
+          )}
+          <DropdownMenu
+            label="···"
+            items={[
+              { label: "Search in Conversation...", onClick: () => onOpenSearch?.() },
+              { label: "Export Conversation...", onClick: () => onExportConversation?.() },
+              "divider",
+              { label: "Clear Chat History", onClick: handleClearChat, danger: true },
+              { label: isBlocked ? "Unblock Peer" : "Block Peer", onClick: handleToggleBlock, danger: !isBlocked },
+            ]}
+          />
         </div>
       </div>
 
@@ -325,6 +405,20 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
         </div>
       )}
 
+      {/* Design screen 10.6's "left the network" banner - real behavior
+          behind it already exists (messaging.py/filetransfer.py's own
+          _flush_pending_loop auto-retries queued messages and stalled
+          transfers the moment a peer reappears), this just surfaces it
+          instead of leaving it to a quiet status-line change only. */}
+      {!online && !isBlocked && (
+        <div style={{ flex: "0 0 auto", padding: "11px 20px", borderBottom: "1px solid var(--divider)", background: "#2a2320", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ width: 7, height: 7, borderRadius: 99, background: "#d9a441", flexShrink: 0 }} />
+          <span style={{ fontSize: 12.5, color: "#f0e4d8" }}>
+            {peer.name} left the network. Queued messages and paused transfers resume automatically when they're back.
+          </span>
+        </div>
+      )}
+
       {searchOpen && (
         <div style={{ flex: "0 0 auto", padding: "10px 20px", borderBottom: "1px solid var(--divider)", background: "var(--panel)", display: "flex", alignItems: "center", gap: 10 }}>
           <input
@@ -333,7 +427,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
             onChange={(e) => setSearchQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && onCloseSearch?.()}
             placeholder={`Search in conversation with ${peer.name}`}
-            style={{ flex: 1, height: 36, borderRadius: 11, border: "1px solid var(--border)", padding: "0 13px", fontSize: 13.5 }}
+            style={{ flex: 1, minWidth: 0, height: 36, borderRadius: 11, border: "1px solid var(--border)", padding: "0 13px", fontSize: 13.5 }}
           />
           <button
             onClick={() => {
@@ -421,7 +515,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
               if (e.key === "Escape") setFilePickerOpen(false);
             }}
             placeholder="Full path to a file on this machine"
-            style={{ flex: 1, height: 38, borderRadius: 12, border: "1px solid var(--border)", padding: "0 13px", fontSize: 13.5, fontFamily: '"IBM Plex Mono", monospace' }}
+            style={{ flex: 1, minWidth: 0, height: 38, borderRadius: 12, border: "1px solid var(--border)", padding: "0 13px", fontSize: 13.5, fontFamily: '"IBM Plex Mono", monospace' }}
           />
           <button onClick={handleSendFile} style={pillButtonStyle}>
             Send file
@@ -453,30 +547,48 @@ export default function ConversationPane({ peer, online = true, onOpenCall, empt
             <AttachMenuItem label="Any file" onClick={() => handlePickFile("any")} />
           </div>
         )}
-        <button
-          onClick={() => (hasNativePicker ? setAttachMenuOpen((v) => !v) : setFilePickerOpen((v) => !v))}
-          disabled={isBlocked}
-          style={{ width: 38, height: 38, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "var(--text-muted)", opacity: isBlocked ? 0.5 : 1 }}
-        >
-          +
-        </button>
-        <input
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") handleSend();
-          }}
-          disabled={isBlocked}
-          placeholder={isBlocked ? `You've blocked ${peer.name}` : `Message ${peer.name}, or drop a file anywhere in this window`}
-          style={{ flex: 1, height: 42, borderRadius: 14, border: "1px solid var(--border)", padding: "0 15px", fontSize: 14, opacity: isBlocked ? 0.6 : 1 }}
-        />
-        <button
-          onClick={handleSend}
-          disabled={!draft.trim() || isBlocked}
-          style={{ padding: "0 18px", height: 42, borderRadius: 14, border: "none", background: draft.trim() && !isBlocked ? "var(--accent)" : "var(--border)", color: draft.trim() && !isBlocked ? "#fff8f2" : "var(--text-3)", fontWeight: 600, fontSize: 14 }}
-        >
-          Send
-        </button>
+        {!voiceActive && (
+          <>
+            <button
+              onClick={() => (hasNativePicker ? setAttachMenuOpen((v) => !v) : setFilePickerOpen((v) => !v))}
+              disabled={isBlocked}
+              style={{ width: 38, height: 38, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--border)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: "var(--text-muted)", opacity: isBlocked ? 0.5 : 1 }}
+            >
+              +
+            </button>
+            <input
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSend();
+              }}
+              disabled={isBlocked}
+              placeholder={isBlocked ? `You've blocked ${peer.name}` : `Message ${peer.name}, or drop a file anywhere in this window`}
+              style={{ flex: 1, minWidth: 0, height: 42, borderRadius: 14, border: "1px solid var(--border)", padding: "0 15px", fontSize: 14, opacity: isBlocked ? 0.6 : 1 }}
+            />
+          </>
+        )}
+        {/* One stable instance, always mounted at this same position - its
+            own idle/recording/review stages already control its own width
+            and the siblings above hide themselves while it's active, so
+            there's never a reason to conditionally mount/unmount this
+            element itself. An earlier version did exactly that (rendered a
+            second, separate <VoiceRecorder> only while active) and it was
+            a real bug, not just untidy: two different elements means two
+            different component instances, so React would discard the
+            first one's whole in-progress recording - MediaRecorder
+            reference, captured chunks, everything - the instant recording
+            actually started, caught before it ever reached a live test. */}
+        <VoiceRecorder disabled={isBlocked} onSend={handleSendVoiceNote} onActiveChange={setVoiceActive} />
+        {!voiceActive && (
+          <button
+            onClick={handleSend}
+            disabled={!draft.trim() || isBlocked}
+            style={{ padding: "0 18px", height: 42, borderRadius: 14, border: "none", background: draft.trim() && !isBlocked ? "var(--accent)" : "var(--border)", color: draft.trim() && !isBlocked ? "#fff8f2" : "var(--text-3)", fontWeight: 600, fontSize: 14 }}
+          >
+            Send
+          </button>
+        )}
       </div>
     </div>
   );
@@ -503,6 +615,7 @@ const pillButtonStyle = {
   fontSize: 12.5,
   fontWeight: 600,
   color: "var(--text-strong)",
+  flexShrink: 0,
 };
 
 // A call's history entry shown inline in the timeline itself, not just the
@@ -605,6 +718,12 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, onDelete, fo
   const [imagePreviewFailed, setImagePreviewFailed] = useState(false);
   const showImagePreview = isImageFile(file.filename) && Boolean(file.saved_path) && !imagePreviewFailed;
   const [videoPreviewFailed, setVideoPreviewFailed] = useState(false);
+  // Checked, and rendered, before showVideoPreview below - a voice note is
+  // also a .webm file (see fileTypes.js's isVoiceMessage for why), so
+  // isVideoFile would independently also match it; this just has to win
+  // the ternary first, not exclude the other check.
+  const [audioPreviewFailed, setAudioPreviewFailed] = useState(false);
+  const showAudioPreview = isVoiceMessage(file.filename) && Boolean(file.saved_path) && !audioPreviewFailed;
   const showVideoPreview = isVideoFile(file.filename) && Boolean(file.saved_path) && !videoPreviewFailed;
   const { menuPosition, openContextMenu, closeContextMenu } = useContextMenu();
 
@@ -641,8 +760,11 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, onDelete, fo
         style={{
           padding: "11px 13px",
           borderRadius: sent ? "18px 18px 5px 18px" : "18px 18px 18px 5px",
-          background: "var(--surface)",
-          border: isExecutable ? "1.5px solid var(--danger)" : "1px solid var(--border-soft)",
+          // A sent voice note gets the design reference's own orange-bubble
+          // treatment (9.3) - every other file type keeps the plain
+          // surface background regardless of direction, unchanged.
+          background: sent && showAudioPreview ? "var(--accent)" : "var(--surface)",
+          border: isExecutable ? "1.5px solid var(--danger)" : showAudioPreview ? "none" : "1px solid var(--border-soft)",
           display: "flex",
           flexDirection: "column",
           gap: 10,
@@ -659,6 +781,8 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, onDelete, fo
               {file.filename} · {formatSize(file.size)}
             </div>
           </>
+        ) : showAudioPreview ? (
+          <VoiceBubblePlayer transferId={file.transfer_id} filename={file.filename} variant={sent ? "sent" : "received"} onFail={() => setAudioPreviewFailed(true)} />
         ) : showVideoPreview ? (
           <>
             <VideoPreview transferId={file.transfer_id} filename={file.filename} onFail={() => setVideoPreviewFailed(true)} />

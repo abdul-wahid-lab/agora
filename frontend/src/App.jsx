@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import TitleBar from "./components/TitleBar";
 import IconRail from "./components/IconRail";
 import StatusBar from "./components/StatusBar";
@@ -47,7 +47,83 @@ export default function App() {
   const [groupCreationOpen, setGroupCreationOpen] = useState(false);
   const [conversationSearchOpen, setConversationSearchOpen] = useState(false);
   const [callsPeerFilter, setCallsPeerFilter] = useState(null);
+  const [filesPeerFilter, setFilesPeerFilter] = useState(null);
+  function handleOpenFilesForPeer(peerId) {
+    setFilesPeerFilter(peerId);
+    setActive("files");
+  }
   const [sidebarVisible, setSidebarVisible] = useState(true);
+  // The left list panel (PeerList in Nearby, ChatsListPanel in Chats) - same
+  // show/hide idea as the existing right InfoSidebar toggle, just the other
+  // side. A third "focus" action hides both at once for a distraction-free
+  // view of just the open conversation, and un-hides both again if either
+  // was already hidden - a real toggle, not a one-way action.
+  const [leftPanelVisible, setLeftPanelVisible] = useState(true);
+  // Real bug, found from a live screenshot at a narrow window width: with
+  // PeerList/ChatsListPanel fixed at 300px and InfoSidebar fixed at 248px,
+  // a narrow enough window leaves the center conversation column only a
+  // few pixels wide - not just cramped, but bad enough that message text
+  // wraps one character per line and the layout is actually unusable, not
+  // just ugly. The manual panel-toggle buttons already existed for
+  // deliberately freeing up space, but nothing made that happen
+  // automatically, so a window narrowed by simply dragging its edge (no
+  // deliberate toggle click involved) broke outright.
+  //
+  // Thresholds leave enough room for the center pane to stay genuinely
+  // usable at each step: below 1000px there isn't room for both side
+  // panels plus a comfortable center column, so the right info sidebar
+  // (less essential than the conversation itself) goes first; below
+  // 700px even just the left list panel alongside the nav rail doesn't
+  // leave enough, so that goes too, down to just the rail and the
+  // conversation.
+  //
+  // Only ever auto-hides a panel that's currently visible, and only ever
+  // auto-restores one *this same logic* hid - a manual toggle-button
+  // click (still available at any width) marks its ref false, so this
+  // never fights a deliberate manual hide by restoring it again, and
+  // never fights a manual show by immediately re-hiding it on the next
+  // resize tick.
+  const autoHiddenSidebarRef = useRef(false);
+  const autoHiddenLeftRef = useRef(false);
+
+  useEffect(() => {
+    function applyForWidth() {
+      const w = window.innerWidth;
+      setSidebarVisible((prev) => {
+        if (w < 1000 && prev) {
+          autoHiddenSidebarRef.current = true;
+          return false;
+        }
+        if (w >= 1000 && !prev && autoHiddenSidebarRef.current) {
+          autoHiddenSidebarRef.current = false;
+          return true;
+        }
+        return prev;
+      });
+      setLeftPanelVisible((prev) => {
+        if (w < 700 && prev) {
+          autoHiddenLeftRef.current = true;
+          return false;
+        }
+        if (w >= 700 && !prev && autoHiddenLeftRef.current) {
+          autoHiddenLeftRef.current = false;
+          return true;
+        }
+        return prev;
+      });
+    }
+    applyForWidth();
+    window.addEventListener("resize", applyForWidth);
+    return () => window.removeEventListener("resize", applyForWidth);
+  }, []);
+
+  function handleToggleFocus() {
+    const bothVisible = leftPanelVisible && sidebarVisible;
+    autoHiddenSidebarRef.current = false;
+    autoHiddenLeftRef.current = false;
+    setLeftPanelVisible(!bothVisible);
+    setSidebarVisible(!bothVisible);
+  }
   const { peers, refreshing: rescanning, refresh: rescan } = usePeers();
   const conversations = useConversations();
   const groups = useGroups();
@@ -213,6 +289,31 @@ export default function App() {
     placeCall(peerId, media);
   }
 
+  // Design screen 10.4's incoming-call quick replies ("Can't talk now",
+  // "Two minutes") - decline the call the same way the Decline button
+  // already does, then send the canned text as a perfectly ordinary chat
+  // message, same reasoning as the voice-message review screen's "Add a
+  // note" from BUILD_LOG Step 41: there's no real "reply to a call" wire
+  // concept to build, a regular message sent right after declining reads
+  // the same way in the timeline.
+  function handleCallQuickReply(text) {
+    const peerId = call?.peerId;
+    declineCall();
+    if (peerId) api.sendMessage(peerId, text).catch(() => {});
+  }
+
+  // The reference's third quick action, "Message" - decline, then just
+  // open that conversation so the caller can type their own reply,
+  // instead of a canned line.
+  function handleCallDeclineToMessage() {
+    const peerId = call?.peerId;
+    declineCall();
+    if (peerId) {
+      setActive("chats");
+      handleSelectPeer(peerId);
+    }
+  }
+
   // Conversation menu's "Export Conversation..." - fetches the real, current
   // history directly rather than reaching into ConversationPane/
   // GroupConversationPane's own local state, so it always matches what the
@@ -239,7 +340,7 @@ export default function App() {
   }
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       <TitleBar
         connected={connected}
         peerCount={peerCount}
@@ -256,7 +357,16 @@ export default function App() {
         onExportConversation={handleExportConversation}
         onFilterCallsByPeer={handleFilterCallsByPeer}
         sidebarVisible={sidebarVisible}
-        onToggleSidebar={() => setSidebarVisible((v) => !v)}
+        onToggleSidebar={() => {
+          autoHiddenSidebarRef.current = false;
+          setSidebarVisible((v) => !v);
+        }}
+        leftPanelVisible={leftPanelVisible}
+        onToggleLeftPanel={() => {
+          autoHiddenLeftRef.current = false;
+          setLeftPanelVisible((v) => !v);
+        }}
+        onToggleFocus={handleToggleFocus}
       />
 
       <IdentityWarningBanner warnings={identityWarnings} onDismiss={dismissIdentityWarning} />
@@ -266,16 +376,21 @@ export default function App() {
 
         {active === "nearby" && (
           <>
-            <PeerList peers={peers} selected={selectedPeerId} onSelect={handleSelectPeer} onRescan={handleRescan} onOpenQr={() => setQrModalOpen(true)} scanning={rescanning} />
+            {leftPanelVisible && (
+              <PeerList peers={peers} selected={selectedPeerId} onSelect={handleSelectPeer} onRescan={handleRescan} onOpenQr={() => setQrModalOpen(true)} scanning={rescanning} />
+            )}
             {nearbyShowingRadar ? (
-              <ScanRadar peers={peers} />
+              <ScanRadar peers={peers} onRescan={handleRescan} scanning={rescanning} onOpenDiagnostics={() => setActive("settings")} />
             ) : (
               <>
                 <ConversationPane
                   peer={selectedPeer}
                   online={selectedPeerOnline}
                   onOpenCall={handleOpenCall}
-                  emptyState={<ScanRadar peers={peers} />}
+                  onOpenFiles={handleOpenFilesForPeer}
+                  onOpenSearch={() => setConversationSearchOpen(true)}
+                  onExportConversation={handleExportConversation}
+                  emptyState={<ScanRadar peers={peers} onRescan={handleRescan} scanning={rescanning} onOpenDiagnostics={() => setActive("settings")} />}
                   searchOpen={conversationSearchOpen}
                   onCloseSearch={() => setConversationSearchOpen(false)}
                 />
@@ -287,16 +402,18 @@ export default function App() {
 
         {active === "chats" && (
           <>
-            <ChatsListPanel
-              conversations={conversations}
-              groups={groups}
-              selected={selectedPeerId}
-              onSelect={handleSelectPeer}
-              selectedGroupId={selectedGroupId}
-              onSelectGroup={handleSelectGroup}
-              creatingOverride={groupCreationOpen}
-              onCreatingOverrideChange={setGroupCreationOpen}
-            />
+            {leftPanelVisible && (
+              <ChatsListPanel
+                conversations={conversations}
+                groups={groups}
+                selected={selectedPeerId}
+                onSelect={handleSelectPeer}
+                selectedGroupId={selectedGroupId}
+                onSelectGroup={handleSelectGroup}
+                creatingOverride={groupCreationOpen}
+                onCreatingOverrideChange={setGroupCreationOpen}
+              />
+            )}
             {selectedGroupId ? (
               <GroupConversationPane
                 group={selectedGroup}
@@ -308,6 +425,8 @@ export default function App() {
                 otherGroups={groups.filter((g) => g.group_id !== selectedGroupId)}
                 searchOpen={conversationSearchOpen}
                 onCloseSearch={() => setConversationSearchOpen(false)}
+                onOpenSearch={() => setConversationSearchOpen(true)}
+                onExportConversation={handleExportConversation}
               />
             ) : (
               <>
@@ -315,6 +434,9 @@ export default function App() {
                   peer={selectedPeer}
                   online={selectedPeerOnline}
                   onOpenCall={handleOpenCall}
+                  onOpenFiles={handleOpenFilesForPeer}
+                  onOpenSearch={() => setConversationSearchOpen(true)}
+                  onExportConversation={handleExportConversation}
                   searchOpen={conversationSearchOpen}
                   onCloseSearch={() => setConversationSearchOpen(false)}
                 />
@@ -326,7 +448,7 @@ export default function App() {
 
         {active === "calls" && <CallsScreen onPlaceCall={placeCall} filterPeerId={callsPeerFilter} onClearPeerFilter={() => setCallsPeerFilter(null)} />}
 
-        {active === "files" && <FilesScreen />}
+        {active === "files" && <FilesScreen initialPeerFilter={filesPeerFilter} onConsumeInitialPeerFilter={() => setFilesPeerFilter(null)} />}
 
         {active === "settings" && <SettingsScreen me={me} />}
       </div>
@@ -349,6 +471,8 @@ export default function App() {
         remoteScreenVideoRef={remoteScreenVideoRef}
         onAccept={acceptCall}
         onDecline={declineCall}
+        onQuickReply={handleCallQuickReply}
+        onDeclineToMessage={handleCallDeclineToMessage}
         onHangUp={() => hangUp()}
         onCancel={() => hangUp()}
         onToggleMute={toggleMute}
@@ -378,7 +502,7 @@ export default function App() {
 
       {scanOverlayOpen && (
         <div style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex" }}>
-          <ScanRadar peers={peers} />
+          <ScanRadar peers={peers} onRescan={handleRescan} scanning={rescanning} onOpenDiagnostics={() => setActive("settings")} />
         </div>
       )}
 

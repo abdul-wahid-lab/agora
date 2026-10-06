@@ -166,7 +166,7 @@ class FileTransferService:
 
     # -- sending -------------------------------------------------------
 
-    async def send_file(self, peer_id: str, file_path: str, group_id: Optional[str] = None) -> str:
+    async def send_file(self, peer_id: str, file_path: str, group_id: Optional[str] = None, keep_sender_copy: bool = False) -> str:
         path = Path(file_path)
         if not path.is_file():
             raise FileNotFoundError(file_path)
@@ -176,6 +176,19 @@ class FileTransferService:
         digest = await asyncio.to_thread(sha256_file, str(path))
         executable = is_executable_file(path.name)
 
+        # Every other sent file leaves saved_path unset here on purpose -
+        # see ConversationPane.jsx's own comment on canForward/showImage/
+        # showVideo: a sent file's bytes are never guaranteed to still be
+        # at the original path the user picked them from later, so the
+        # sender never gets to preview or forward their own send, only the
+        # receiver (whose saved_path points at a real, permanent, this-app-
+        # owned download). keep_sender_copy is the one deliberate exception
+        # - set only for a voice note, whose source file lives in this
+        # app's own voice_outbox directory (see api.py's
+        # send_voice_message), not a path the user chose and might move or
+        # delete, so it's safe to treat as permanent the same way a
+        # receiver's download already is. That one difference is what lets
+        # the sender hear their own voice note played back too.
         await self.store.save_file(
             transfer_id=transfer_id,
             peer_id=peer_id,
@@ -185,6 +198,7 @@ class FileTransferService:
             sha256=digest,
             is_executable=executable,
             status="offered",
+            saved_path=str(path) if keep_sender_copy else None,
             group_id=group_id,
         )
         self._outgoing_paths[transfer_id] = str(path)
