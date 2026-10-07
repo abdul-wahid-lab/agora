@@ -1768,6 +1768,29 @@ not attempted alongside the UI rebuild in BUILD_LOG Step 41.
   discovery mechanism isn't the same fix as working around a blocked
   direct connection).
 
+  **Attempted 2026-10-06, genuinely blocked on hardware, not abandoned:**
+  this machine actually was on a real Android-style hotspot at the time
+  (SSID "shax," 192.168.43.0/24, confirmed via `netsh wlan show
+  interfaces`) - a real chance to test, not a hypothetical. Both UDP
+  broadcast and mDNS discovery confirmed genuinely working on this
+  specific hotspot (one test backend found the other via `"source":
+  "udp"`, the other via `"source": "mdns"` - both mechanisms functional,
+  not just one). But this was still only ever one laptop talking to
+  itself over two local processes - confirmed via `arp -a` that the only
+  other address on the subnet (192.168.43.98) was the phone's own AP/
+  gateway interface itself (its MAC matched the reported AP BSSID
+  exactly), not a second connected client. AP/client isolation
+  specifically blocks traffic *between two connected stations* - it has
+  no way to manifest in a same-host test, no matter how real the hotspot
+  is, since same-host broadcast/multicast traffic generally never has to
+  cross the AP to "come back" the way two genuinely separate devices'
+  traffic would. No second device (phone, tablet, another laptop) was
+  available to connect to the same hotspot and test against. Still needs
+  a real second device on the same hotspot to actually resolve - the
+  single-machine test confirmed the discovery *mechanisms* work in
+  principle on this network, but could not and cannot confirm or rule out
+  isolation between two real stations.
+
 ## Smaller known gaps (from earlier phases, still true)
 
 - [x] **Search bars in Nearby and Files are visual-only** (fixed
