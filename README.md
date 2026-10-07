@@ -4,7 +4,11 @@
 
 **Where this fits:** campuses and classrooms, conferences, airplanes, hospitals during a network outage, disaster/emergency response, remote sites (construction, camps, villages), factories and warehouses, LAN parties, and any privacy-sensitive gathering where a central server is a liability, not a feature.
 
-This repository holds the **visual design** (a single interactive canvas covering all 37 mobile screens plus a dedicated desktop section), the **working backend** for the phases built so far, and a **real desktop app** (React UI rebuilt to match the actual design file pixel-for-pixel, running inside Electron with the Python backend spawned automatically, not a browser tab, not mockups).
+This repository holds the **visual design** (a single interactive canvas covering 39 mobile screens), the **working backend**, and a **real desktop app** (React UI, running inside Electron with the Python backend spawned automatically, not a browser tab, not mockups) - already well past the mobile canvas in actual features, since calling, screen sharing, voice messages, and group chat are all real and working on desktop today.
+
+## Download
+
+A packaged Windows build is available from the [Releases page](https://github.com/abdul-wahid-lab/agora/releases/latest): a normal installer, or a portable `.exe` that needs no install. See [Run the desktop app](#run-the-desktop-app) below to build it yourself instead.
 
 ![Onboarding: splash, permissions, profile setup, and the live nearby-peers view](assets/readme_hero_onboarding.png)
 
@@ -18,7 +22,7 @@ Open [`design/index.html`](design/index.html) in any browser. It's a self-contai
 
 ## Desktop app design
 
-The plan is an Electron shell around this same design, talking to the local API (see Build status below): a full native-feeling window, not a resized phone screen:
+A real Electron shell, talking to the local API (see Build status below): a full native-feeling window, not a resized phone screen:
 
 ![Desktop onboarding: "Talk to who's around you," name/avatar setup, no account](assets/readme_desktop_welcome.png)
 
@@ -74,12 +78,14 @@ This repo is the design; the app itself is being built in step with it, phase by
 | 2B: File sharing | ✅ done | 8.1–8.7 |
 | 3: Calling | ✅ done | 5.1–5.6, 5.2b, 7.3, 7.4 |
 | 4: Hybrid mode | ❌ removed by design (LAN/WiFi-only, always; internet availability is never checked) | ~~6.2, 7.1~~ |
-| 5: Polish | ⏳ not started | 6.1, 6.3–6.5 |
+| 5: Polish | ✅ done | 6.1, 6.3–6.5 |
 
 - **Discovery**: devices find each other on the LAN via mDNS, with a UDP broadcast fallback for networks that filter it. Verified: peers appear/disappear live as they join and leave.
 - **Messaging**: direct WebSocket between peers (no server in between), messages persisted locally per device, with sent/delivered acknowledgment. Verified: a message sent to a peer that just dropped off the network is held and delivered exactly once, in order, once that peer reappears. Delete for me, delete for everyone (with the same held-and-retried-on-reconnect guarantee if the other person is briefly offline), clearing a whole conversation or the call history, and forwarding a message or a received file, are all built and working.
 - **File sharing**: any file type, offer/accept consent before anything moves, a dedicated connection per transfer so large files stream straight to disk, receiver-side hash verification, and resume from the exact byte offset after a drop. Executable/installable files get a distinctly stronger warning, plus bandwidth-sharing that measurably throttles transfers while a call is active.
-- **Calling**: real peer-to-peer WebRTC audio and video (no STUN/TURN needed, since the same subnet never requires it), signaling relayed over the existing WebSocket rather than any cloud service. Deterministic collision handling if both sides call each other at once, a persisted call history, and an incoming-call toast that shows up regardless of which screen you're on.
+- **Calling**: real peer-to-peer WebRTC audio and video (no STUN/TURN needed, since the same subnet never requires it), signaling relayed over the existing WebSocket rather than any cloud service. Deterministic collision handling if both sides call each other at once, a persisted call history, and an incoming-call toast that shows up regardless of which screen you're on. Either side can share their screen mid-call (consent required - the other person has to accept before anything is sent), and the person answering a call can share just as freely as the one who placed it.
+- **Voice messages**: hold the mic button to record, release to review (waveform, playback, an optional note) before actually sending - works inline in both 1:1 and group chats, no real-time call required.
+- **Settings**: privacy & security (the current, honest encryption status - see below), notifications (per-peer mute), and an about/help screen with onboarding steps and the running version number.
 - A local API layer (`app.api`, FastAPI) wraps all of the above for the UI to call instead of a human typing into a CLI.
 
 **Desktop app**: a real Electron window, not a browser tab:
@@ -91,6 +97,8 @@ This repo is the design; the app itself is being built in step with it, phase by
 | Nearby, Chats, Files, Calls: all live, all wired to the real backend | ✅ done |
 | Electron packaging (frameless window, auto-spawned backend, Windows installer) | ✅ done |
 | Group chat, group calling, group file/image sharing | ✅ done (calling capped at 4 people, full mesh, see Architecture below) |
+| Screen sharing (1:1 calls, consent-based) | ✅ done |
+| Voice messages (1:1 and group chat) | ✅ done |
 
 Not built: raising the group-calling cap past 4 people, which needs a real relay design (discussed and deliberately deferred, not a missing feature so much as a scaling decision not yet needed), and offline delivery/delete/forward for group messages (all exist for 1:1 chat already).
 
