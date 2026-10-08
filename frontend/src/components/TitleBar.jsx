@@ -245,7 +245,15 @@ export default function TitleBar({
     { label: "Preferences...", onClick: () => onSelectTab("settings") },
     { label: "Clear All History", onClick: handleClearAllHistory, danger: true },
     "divider",
-    { label: "Exit", onClick: () => electron?.closeWindow?.(), disabled: !electron, disabledReason: "Only available in the desktop app" },
+    {
+      label: "Exit",
+      // A real quit, not closeWindow() - that one now hides to the tray
+      // icon instead of exiting (see main.cjs's createTray()), so "File >
+      // Exit" needs its own distinct path to actually quit the app.
+      onClick: () => electron?.quitApp?.(),
+      disabled: !electron,
+      disabledReason: "Only available in the desktop app",
+    },
   ];
 
   const conversationItems = [

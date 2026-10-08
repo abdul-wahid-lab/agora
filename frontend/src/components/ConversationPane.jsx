@@ -100,7 +100,7 @@ export default function ConversationPane({ peer, online = true, onOpenCall, onOp
       if (evt.type === "file_progress") {
         setProgressByTransfer((prev) => ({ ...prev, [evt.transfer_id]: evt.bytes_sent / evt.total }));
       }
-      if ((evt.type === "file_offer" || evt.type === "file_status") && current) {
+      if ((evt.type === "file_offer" || evt.type === "file_status" || evt.type === "file_played") && current) {
         api.files(current).then(setFiles).catch(() => {});
       }
       // call_ended doesn't carry a peer_id (see api.py's _broadcast call),
@@ -782,7 +782,10 @@ function FileBubble({ file, progress, onAccept, onDecline, onRetry, onDelete, fo
             </div>
           </>
         ) : showAudioPreview ? (
-          <VoiceBubblePlayer transferId={file.transfer_id} filename={file.filename} variant={sent ? "sent" : "received"} onFail={() => setAudioPreviewFailed(true)} />
+          <>
+            <VoiceBubblePlayer transferId={file.transfer_id} filename={file.filename} variant={sent ? "sent" : "received"} onFail={() => setAudioPreviewFailed(true)} />
+            {sent && file.played_at && <div style={{ fontSize: 11, color: "#fbdcc8", textAlign: "right" }}>Played</div>}
+          </>
         ) : showVideoPreview ? (
           <>
             <VideoPreview transferId={file.transfer_id} filename={file.filename} onFail={() => setVideoPreviewFailed(true)} />

@@ -26,6 +26,7 @@ import asyncio
 import hashlib
 import os
 import socket
+import time
 import uuid
 from typing import Optional
 
@@ -41,15 +42,19 @@ from app.disappearing import DisappearingMessagesService
 from app.discovery import Peer, PeerDiscovery
 from app.filetransfer import FileTransferService, IncomingFileOffer
 from app.groups import GroupService
+from app.latency import LatencyService
 from app.messaging import IncomingMessage, MessagingService
 from app.photos import PhotoExchange, PhotoStore
 from app.storage import MessageStore
+from app.transcribe import transcribe_file
 
 NAME = os.environ.get("AGORA_NAME", socket.gethostname())
 PORT = int(os.environ.get("AGORA_PORT", "8001"))
 DB_PATH = os.environ.get("AGORA_DB", f"{NAME.lower()}.db")
 DOWNLOADS_DIR = os.environ.get("AGORA_DOWNLOADS", f"{NAME.lower()}_files")
 PEER_ID = os.environ.get("AGORA_PEER_ID")  # optional - fixed identity across restarts
+DISCOVERY_MODE = os.environ.get("AGORA_DISCOVERY_MODE", "auto")  # "auto" | "mdns" | "udp"
+_PROCESS_STARTED_AT = time.time()
 
 app = FastAPI(title="Agora local API")
 # SECURITY: this used to be allow_origins=["*"]. Binding to 127.0.0.1 does
@@ -90,6 +95,7 @@ discovery = PeerDiscovery(
     # this, synchronously, before it's ever allowed to reach the live
     # registry - not lazily, later, inside messaging.py.
     on_verify_signing_key=store.check_and_pin_signing_key,
+    mode=DISCOVERY_MODE,
 )
 
 # UI clients connected to /events - pushed to as things happen, rather than
@@ -134,6 +140,20 @@ def _on_received(transfer_id: str, status: str, saved_path: Optional[str]) -> No
 
 def _on_progress(transfer_id: str, bytes_sent: int, total: int) -> None:
     asyncio.create_task(_broadcast({"type": "file_progress", "transfer_id": transfer_id, "bytes_sent": bytes_sent, "total": total}))
+
+
+def _on_played(transfer_id: str) -> None:
+    # Fires on the *sender's* own row once the other side actually plays the
+    # voice message back - lets a still-open chat window show "Played" live.
+    # group_id is looked up (rather than carried on the event like on_offer's
+    # is) since filetransfer.py's on_played only ever hands back the bare
+    # transfer_id - GroupConversationPane's live refetch needs it to match
+    # the open conversation.
+    async def _broadcast_played():
+        record = await store.get_file(transfer_id)
+        await _broadcast({"type": "file_played", "transfer_id": transfer_id, "group_id": record.group_id if record else None})
+
+    asyncio.create_task(_broadcast_played())
 
 
 def _on_incoming_call(state: CallState, sdp: dict) -> None:
@@ -232,6 +252,7 @@ def _on_group_call_start(evt) -> None:
 
 
 messaging = MessagingService(discovery, store, on_message=_on_message, on_identity_changed=_on_identity_changed)
+latency = LatencyService(discovery, messaging)
 file_transfer = FileTransferService(
     discovery,
     messaging,
@@ -240,6 +261,7 @@ file_transfer = FileTransferService(
     on_offer=_on_offer,
     on_received=_on_received,
     on_progress=_on_progress,
+    on_played=_on_played,
     # `calling` isn't assigned yet at this line, but this lambda only reads
     # it at call time (well after module load finishes) - Python closures
     # resolve globals by name, not by value captured here.
@@ -302,6 +324,7 @@ async def startup() -> None:
     # and deadlocks trying to schedule its own coroutines on it.
     await asyncio.to_thread(discovery.start)
     await messaging.start()
+    await latency.start()
     await deletion.start()
     await disappearing.start()
     await file_transfer.start()
@@ -317,6 +340,7 @@ async def shutdown() -> None:
     await file_transfer.stop()
     await disappearing.stop()
     await deletion.stop()
+    await latency.stop()
     await messaging.stop()
     discovery.stop()
 
@@ -336,6 +360,26 @@ async def get_me():
         # design, see crypto_identity.py - there's nothing sensitive about
         # exposing it here.
         "public_key": discovery.public_key,
+    }
+
+
+@app.get("/me/diagnostics")
+async def get_diagnostics():
+    """Preferences' diagnostics panel (design reference 10.10) - every
+    number here is something this device genuinely knows about itself
+    right now, not a placeholder. "Copy diagnostics" for a bug report is a
+    frontend clipboard action against this same response, nothing new
+    needed here for that part."""
+    peers = discovery.registry.list()
+    key_resolved_count = sum(1 for p in peers if p.public_key)
+    return {
+        "device_id": discovery.peer_id,
+        "device_name": discovery.device_name,
+        "discovery_mode": DISCOVERY_MODE,
+        "reachable_peer_count": len(peers),
+        "key_resolved_count": key_resolved_count,
+        "uptime_sec": round(time.time() - _PROCESS_STARTED_AT),
+        "peak_throughput_bps": file_transfer.get_peak_speed_bps(),
     }
 
 
@@ -459,7 +503,16 @@ async def add_scanned_peer(body: ScannedPeerBody):
 async def get_peers():
     blocked = {p["peer_id"] for p in await store.list_blocked_peers()}
     return [
-        {"peer_id": p.peer_id, "name": p.name, "address": p.address, "port": p.port, "source": p.source}
+        {
+            "peer_id": p.peer_id,
+            "name": p.name,
+            "address": p.address,
+            "port": p.port,
+            "source": p.source,
+            "device_type": p.device_type,
+            "rtt_ms": latency.latest.get(p.peer_id, {}).get("rtt_ms"),
+            "quality": latency.latest.get(p.peer_id, {}).get("quality", "unreachable"),
+        }
         for p in discovery.registry.list()
         if p.peer_id not in blocked
     ]
@@ -602,6 +655,7 @@ async def get_group_files(group_id: str, limit: int = 200):
             "status": f.status,
             "saved_path": f.saved_path,
             "ts": f.ts,
+            "played_at": f.played_at,
         }
         for f in files
     ]
@@ -752,9 +806,59 @@ async def get_all_files():
             "status": r.status,
             "saved_path": r.saved_path,
             "ts": r.ts,
+            "played_at": r.played_at,
         }
         for r in records
     ]
+
+
+@app.get("/transfers")
+async def get_transfers():
+    """The dedicated Transfers panel (design reference 10.8) - every
+    active/recent transfer across every conversation and group at once,
+    with real speed/ETA for whichever ones are actively moving right now
+    (see filetransfer.py's get_transfer_stats, derived from the same
+    progress callbacks the old per-bubble progress bar already used, not a
+    second measurement). Unlike GET /files above, this also resolves a
+    human name for each row (peer or group) since this panel has no
+    surrounding conversation header to supply that context."""
+    records = await store.list_all_files()
+    known = {p["peer_id"]: p["name"] for p in await store.list_known_peers()}
+    group_names: dict[str, str] = {}
+    rows = []
+    for r in records:
+        group_name = None
+        if r.group_id:
+            if r.group_id not in group_names:
+                group = await store.get_group(r.group_id)
+                group_names[r.group_id] = group.name if group else "Unknown group"
+            group_name = group_names[r.group_id]
+        stats = file_transfer.get_transfer_stats(r.transfer_id)
+        rows.append(
+            {
+                "transfer_id": r.transfer_id,
+                "peer_id": r.peer_id,
+                "peer_name": known.get(r.peer_id, r.peer_id[:8]),
+                "group_id": r.group_id,
+                "group_name": group_name,
+                "direction": r.direction,
+                "filename": r.filename,
+                "size": r.size,
+                "status": r.status,
+                "saved_path": r.saved_path,
+                "ts": r.ts,
+                "speed_bps": stats["speed_bps"] if stats else None,
+                "eta_sec": stats["eta_sec"] if stats else None,
+            }
+        )
+    rows.sort(key=lambda row: row["ts"], reverse=True)
+    return rows
+
+
+@app.post("/transfers/{transfer_id}/cancel")
+async def cancel_transfer(transfer_id: str):
+    await file_transfer.cancel(transfer_id)
+    return {"status": "cancelling"}
 
 
 @app.get("/files/{peer_id}")
@@ -771,6 +875,7 @@ async def get_files(peer_id: str):
             "status": r.status,
             "saved_path": r.saved_path,
             "ts": r.ts,
+            "played_at": r.played_at,
         }
         for r in records
     ]
@@ -792,6 +897,32 @@ async def decline_file(transfer_id: str):
 async def resend_file(transfer_id: str):
     asyncio.create_task(file_transfer.resend(transfer_id))
     return {"status": "resending"}
+
+
+@app.post("/files/{transfer_id}/played")
+async def mark_file_played(transfer_id: str):
+    """Called by the receiving side once it actually plays a voice message
+    back, so the sender can show "Played by {name}" - see filetransfer.py's
+    mark_played, which no-ops unless this device is really the receiver."""
+    await file_transfer.mark_played(transfer_id)
+    return {"status": "ok"}
+
+
+@app.post("/files/{transfer_id}/transcribe")
+async def transcribe_voice_message(transfer_id: str):
+    """Design reference 9.3's "hold to transcribe" - runs fully on this
+    device (see transcribe.py), nothing is ever uploaded. Not persisted:
+    re-run on every request rather than cached in the database, same
+    "transient, not a stored record" posture as the feature's own design
+    caption implies."""
+    record = await store.get_file(transfer_id)
+    if record is None or not record.saved_path or not os.path.isfile(record.saved_path):
+        raise HTTPException(404, "no such file")
+    try:
+        text = await transcribe_file(record.saved_path)
+    except Exception as e:
+        raise HTTPException(500, f"transcription failed: {e}")
+    return {"text": text}
 
 
 @app.get("/files/{transfer_id}/raw")

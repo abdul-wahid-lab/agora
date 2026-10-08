@@ -37,6 +37,28 @@ const ICONS = {
   files: (active) => (
     <span style={{ width: 19, height: 19, borderRadius: 5, border: `2.5px solid ${active ? "var(--accent)" : "var(--icon-muted)"}` }} />
   ),
+  transfers: (active) => (
+    <span
+      style={{
+        width: 18,
+        height: 18,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+      }}
+    >
+      <span
+        style={{
+          width: 0,
+          height: 0,
+          borderLeft: "5px solid transparent",
+          borderRight: "5px solid transparent",
+          borderBottom: `9px solid ${active ? "var(--accent)" : "var(--icon-muted)"}`,
+          transform: "rotate(180deg)",
+        }}
+      />
+    </span>
+  ),
 };
 
 const NAV = [
@@ -44,6 +66,7 @@ const NAV = [
   { id: "chats", label: "Chats" },
   { id: "calls", label: "Calls" },
   { id: "files", label: "Files" },
+  { id: "transfers", label: "Transfers" },
 ];
 
 export default function IconRail({ active, onSelect, selfInitial }) {

@@ -24,6 +24,7 @@ async function request(path, options) {
 
 export const api = {
   me: () => request("/me"),
+  diagnostics: () => request("/me/diagnostics"),
   myQr: () => request("/me/qr"),
   addScannedPeer: (payload) => request("/peers/add-scanned", { method: "POST", body: JSON.stringify(payload) }),
   peers: () => request("/peers"),
@@ -48,7 +49,11 @@ export const api = {
   acceptFile: (transferId) => request(`/files/${transferId}/accept`, { method: "POST" }),
   declineFile: (transferId) => request(`/files/${transferId}/decline`, { method: "POST" }),
   resendFile: (transferId) => request(`/files/${transferId}/resend`, { method: "POST" }),
+  markFilePlayed: (transferId) => request(`/files/${transferId}/played`, { method: "POST" }),
+  transcribeFile: (transferId) => request(`/files/${transferId}/transcribe`, { method: "POST" }),
   deleteFile: (transferId) => request(`/files/${transferId}`, { method: "DELETE" }),
+  transfers: () => request("/transfers"),
+  cancelTransfer: (transferId) => request(`/transfers/${transferId}/cancel`, { method: "POST" }),
   // Raw recorded bytes, same shape as setMyPhoto below - there's no local
   // path to send the way sendFile/sendGroupFile above expect, since
   // MediaRecorder's output never touches disk on its own. The backend

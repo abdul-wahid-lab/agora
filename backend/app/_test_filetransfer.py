@@ -54,6 +54,17 @@ async def main() -> None:
     test_file.write_bytes(b"\x42" * 500_000 + b"not really a jpeg, just test bytes")
     original_hash = sha256_file(str(test_file))
 
+    # Bigger, just for the two cancel-mid-stream tests below - enough
+    # chunks (CHUNK_SIZE is 256KB) that a cancel() scheduled via
+    # asyncio.create_task from inside an on_progress callback reliably gets
+    # a turn to actually run before the whole transfer finishes, rather
+    # than racing a fast localhost transfer of the small two-chunk file
+    # every other test here uses.
+    big_file = tmp / "big.bin"
+    big_file.write_bytes(b"\x37" * 8_000_000)
+    big_hash = sha256_file(str(big_file))
+    big_bytes_len = big_file.stat().st_size
+
     alice_store = MessageStore(str(tmp / "alice.db"))
     bob_store = MessageStore(str(tmp / "bob.db"))
     alice_disc = PeerDiscovery(device_name="Alice", service_port=8101, peer_id="alice-test", public_key=alice_store.get_or_create_device_keys()["public_key"], signing_private_key=alice_store.get_or_create_device_keys()["signing_private_key"], signing_public_key=alice_store.get_or_create_device_keys()["signing_public_key"])
@@ -191,6 +202,87 @@ async def main() -> None:
         bob_final_record = await bob_store.get_file(mismatch_id)
         assert bob_final_record.status == "failed", f"DB should record failed, got {bob_final_record.status}"
         print("TEST 4 (hash mismatch rejected): PASS")
+
+        # -- test 5: sender cancels mid-stream --------------------------------
+        # Alice cancels her own send as soon as she sees any real progress -
+        # the transfer must land on 'cancelled', not hang forever waiting
+        # for a result_future that was never going to resolve normally.
+        cancel_id = "sender-cancel-test-1"
+        bob_ft.on_offer = lambda offer: asyncio.create_task(bob_ft.accept(offer.transfer_id))
+        bob_ft.on_received = lambda *a: None
+
+        def alice_cancel_on_progress(transfer_id, bytes_so_far, total):
+            # The real cancel() method, not a direct flag poke - exercises
+            # the exact path the Transfers panel's Cancel button calls,
+            # including its own record.status lookup/branching. Scheduled
+            # (not awaited inline, on_progress is a plain sync callback)
+            # against the bigger file above so it reliably gets a turn to
+            # run before the whole transfer finishes.
+            if transfer_id == cancel_id:
+                asyncio.create_task(alice_ft.cancel(transfer_id))
+
+        alice_ft.on_progress = alice_cancel_on_progress
+        await alice_store.save_file(
+            transfer_id=cancel_id, peer_id=bob_disc.peer_id, direction="sent",
+            filename="big.bin", size=big_bytes_len, sha256=big_hash, is_executable=False, status="offered",
+        )
+        alice_ft._outgoing_paths[cancel_id] = str(big_file)
+        await alice_ft.resend(cancel_id)
+        alice_cancel_record = await alice_store.get_file(cancel_id)
+        assert alice_cancel_record.status == "cancelled", f"sender-side status should be cancelled, got {alice_cancel_record.status}"
+        assert cancel_id not in alice_ft._progress_stats, "cancelled transfer should not linger in progress stats"
+        print("TEST 5 (sender cancels mid-stream): PASS")
+
+        # -- test 6: receiver cancels mid-stream ------------------------------
+        # Bob cancels as soon as he sees any real progress - his own .part
+        # file must be cleaned up (not left on disk) and Alice must learn
+        # about it too (via the same file_failed/reason=cancelled channel
+        # a hash mismatch already uses), landing on 'cancelled' on both
+        # sides rather than Alice being left thinking it just 'offered'.
+        recv_cancel_id = "receiver-cancel-test-1"
+        alice_ft.on_progress = None
+
+        def bob_cancel_on_progress(transfer_id, bytes_so_far, total):
+            # The real cancel() method again (see alice_cancel_on_progress's
+            # own comment above) - this is also what directly caught a real
+            # bug during live manual testing: cancel() only matched status
+            # == "transferring", but a receiver's own row is "accepted"
+            # during an active stream, never "transferring" at all, so a
+            # receiver-initiated cancel silently did nothing until fixed.
+            if transfer_id == recv_cancel_id:
+                asyncio.create_task(bob_ft.cancel(transfer_id))
+
+        bob_ft.on_progress = bob_cancel_on_progress
+        bob_ft.on_offer = lambda offer: asyncio.create_task(bob_ft.accept(offer.transfer_id))
+
+        alice_recv_cancel_done = asyncio.get_event_loop().create_future()
+
+        async def resend_and_wait():
+            try:
+                await alice_ft.resend(recv_cancel_id)
+            finally:
+                if not alice_recv_cancel_done.done():
+                    alice_recv_cancel_done.set_result(True)
+
+        await alice_store.save_file(
+            transfer_id=recv_cancel_id, peer_id=bob_disc.peer_id, direction="sent",
+            filename="big.bin", size=big_bytes_len, sha256=big_hash, is_executable=False, status="offered",
+        )
+        await bob_store.save_file(
+            transfer_id=recv_cancel_id, peer_id=alice_disc.peer_id, direction="received",
+            filename="big.bin", size=big_bytes_len, sha256=big_hash, is_executable=False, status="awaiting_accept",
+        )
+        alice_ft._outgoing_paths[recv_cancel_id] = str(big_file)
+        asyncio.create_task(resend_and_wait())
+        await asyncio.wait_for(alice_recv_cancel_done, timeout=15)
+
+        bob_cancel_record = await bob_store.get_file(recv_cancel_id)
+        assert bob_cancel_record.status == "cancelled", f"receiver-side status should be cancelled, got {bob_cancel_record.status}"
+        leftover_cancel_part = bob_ft.incoming_dir / f"{recv_cancel_id}.part"
+        assert not leftover_cancel_part.exists(), "cancelled transfer's .part file should be deleted, not left on disk"
+        alice_cancel_record2 = await alice_store.get_file(recv_cancel_id)
+        assert alice_cancel_record2.status == "cancelled", f"sender should also learn of the receiver's cancel, got {alice_cancel_record2.status}"
+        print("TEST 6 (receiver cancels mid-stream): PASS")
 
         print("\nALL TESTS PASSED")
     finally:

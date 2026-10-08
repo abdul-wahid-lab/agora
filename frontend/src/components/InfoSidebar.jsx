@@ -17,9 +17,11 @@ const EXT_STYLE = {
 };
 
 // Matches design screen 10.7's right-hand panel. The design's mockup shows
-// fabricated network telemetry (latency/link/route); rather than invent
-// numbers we don't measure, this shows what discovery genuinely knows about
-// the connection (its transport and address) - real over fake.
+// fabricated network telemetry (latency/link/route); this now shows a real
+// measured round-trip time instead (see backend/app/latency.py's actual
+// ping/pong over the live connection) rather than inventing a number, with
+// "route: direct, no relay" kept as the one line that was always true by
+// construction (there's no relay server in this app's design at all).
 export default function InfoSidebar({ peer, online = true }) {
   const [files, setFiles] = useState([]);
 
@@ -57,7 +59,7 @@ export default function InfoSidebar({ peer, online = true }) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 11px", borderRadius: 99, background: "var(--surface-2)" }}>
           <span style={{ width: 6, height: 6, borderRadius: 99, background: online ? "var(--accent)" : "var(--text-3)" }} />
-          <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-strong)" }}>{online ? peer.address : "Not on this network"}</span>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: "var(--text-strong)" }}>{online ? peer.device_type || peer.address : "Not on this network"}</span>
         </div>
       </div>
 
@@ -70,6 +72,8 @@ export default function InfoSidebar({ peer, online = true }) {
             via &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;{peer.source}
             <br />
             route &nbsp;&nbsp;&nbsp;direct, no relay
+            <br />
+            latency &nbsp;{peer.rtt_ms != null ? `${peer.rtt_ms} ms · ${peer.quality}` : "measuring…"}
           </div>
         ) : (
           <div className="mono" style={{ fontSize: 11.5, lineHeight: 1.7, color: "var(--text-2)" }}>

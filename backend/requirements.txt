@@ -3,3 +3,5 @@ uvicorn[standard]
 zeroconf
 websockets
 cryptography
+av
+pywhispercpp

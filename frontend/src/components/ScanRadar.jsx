@@ -159,9 +159,9 @@ export default function ScanRadar({ peers = [], onRescan, scanning = false, onOp
         <div style={{ width: "min(90vw, 480px)", display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {[
-              "Same network, same band — guest WiFi and 2.4/5 GHz splits are often isolated.",
-              "Router device isolation — look for “AP isolation” in your WiFi settings.",
-              "Firewall — your OS may be blocking Agora's local port.",
+              "Same network, same band: guest WiFi and 2.4/5 GHz splits are often isolated.",
+              "Router device isolation: look for “AP isolation” in your WiFi settings.",
+              "Firewall: your OS may be blocking Agora's local port.",
             ].map((tip, i) => (
               <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 11, padding: "11px 13px", borderRadius: 14, background: "var(--surface)", border: "1px solid var(--border-soft)" }}>
                 <span style={{ width: 20, height: 20, flexShrink: 0, borderRadius: 99, background: "var(--accent-soft)", color: "var(--accent-strong)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700 }}>{i + 1}</span>

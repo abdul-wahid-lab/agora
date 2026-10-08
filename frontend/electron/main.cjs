@@ -25,7 +25,7 @@
 // Dev mode still uses the venv directly, since freezing on every code
 // change would make local development painfully slow.
 
-const { app, BrowserWindow, ipcMain, screen, dialog, shell, desktopCapturer, session } = require("electron");
+const { app, BrowserWindow, ipcMain, screen, dialog, shell, desktopCapturer, session, Tray, Menu, nativeImage } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -56,6 +56,13 @@ logToFile(`main.cjs starting, isPackaged=${app.isPackaged}, argv=${JSON.stringif
 
 let backendProcess = null;
 let mainWindow = null;
+let tray = null;
+let trayPollInterval = null;
+// Set only on a real quit path (tray's own Quit item, before-quit) - the
+// window's own close handler below checks this to tell "the user clicked
+// the X" (hide to tray) apart from "the app is actually shutting down"
+// (let the close really happen).
+let isQuitting = false;
 
 function backendDir() {
   // Dev: repo checkout, two levels up from frontend/electron.
@@ -119,6 +126,7 @@ function startBackend() {
     AGORA_API_PORT: String(API_PORT),
     AGORA_DB: path.join(userData, "agora.db"),
     AGORA_DOWNLOADS: downloadsDir,
+    AGORA_DISCOVERY_MODE: identity.discoveryMode || "auto",
   };
 
   if (isDev) {
@@ -203,10 +211,91 @@ function createWindow() {
     mainWindow.loadFile(filePath);
   }
 
-  mainWindow.on("closed", () => {
+  // Close-to-tray: only meaningful once a tray icon actually exists (see
+  // createTray() below) - without one, closing the only window with
+  // nothing left to reopen it from would just strand the user with a
+  // backend process they can't see or quit, which is worse than today's
+  // plain "close quits everything" behavior.
+  mainWindow.on("close", (e) => {
+    if (tray && !isQuitting) {
+      e.preventDefault();
+      mainWindow.hide();
+      return;
+    }
     logToFile("window closed");
+  });
+
+  mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+function createTray() {
+  const iconPath = path.join(__dirname, "..", "build-resources", "icon.ico");
+  tray = new Tray(nativeImage.createFromPath(iconPath));
+  tray.setToolTip("Agora");
+  tray.on("click", () => {
+    if (!mainWindow) return;
+    if (mainWindow.isVisible()) {
+      mainWindow.hide();
+    } else {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+  refreshTrayStatus();
+  trayPollInterval = setInterval(refreshTrayStatus, 5000);
+}
+
+// Live status "at a glance" (design reference's own phrase for this) -
+// real counts from this device's own backend, not a decorative icon with
+// nothing behind it. Polled from the main process directly (the backend's
+// plain HTTP API, same one the renderer already talks to) rather than
+// routed through the renderer, so the tray keeps working even while the
+// window is hidden and its own React code isn't actively running any poll
+// loop of its own.
+async function refreshTrayStatus() {
+  if (!tray) return;
+  try {
+    const [peersRes, transfersRes] = await Promise.all([
+      fetch(`http://127.0.0.1:${API_PORT}/peers`),
+      fetch(`http://127.0.0.1:${API_PORT}/transfers`),
+    ]);
+    const peers = await peersRes.json();
+    const transfers = await transfersRes.json();
+    const activeTransfers = transfers.filter((t) => t.status === "transferring" || t.status === "accepted").length;
+    const peerLine = `${peers.length} ${peers.length === 1 ? "person" : "people"} nearby`;
+    const transferLine = activeTransfers ? `${activeTransfers} transfer${activeTransfers === 1 ? "" : "s"} active` : "No active transfers";
+    tray.setToolTip(`Agora - ${peerLine}, ${transferLine.toLowerCase()}`);
+    tray.setContextMenu(
+      Menu.buildFromTemplate([
+        { label: peerLine, enabled: false },
+        { label: transferLine, enabled: false },
+        { type: "separator" },
+        {
+          label: "Open Agora",
+          click: () => {
+            mainWindow?.show();
+            mainWindow?.focus();
+          },
+        },
+        { type: "separator" },
+        {
+          label: "Quit",
+          click: () => {
+            isQuitting = true;
+            app.quit();
+          },
+        },
+      ])
+    );
+  } catch (e) {
+    // Backend not up yet (still starting), or briefly unreachable - the
+    // tray just keeps showing its last-known-good status rather than
+    // replacing it with an error state for what's usually a half-second
+    // startup window, not a real failure.
+    logToFile(`refreshTrayStatus failed: ${e.message}`);
+  }
 }
 
 ipcMain.on("window:minimize", () => mainWindow?.minimize());
@@ -216,6 +305,14 @@ ipcMain.on("window:maximize", () => {
   else mainWindow.maximize();
 });
 ipcMain.on("window:close", () => mainWindow?.close());
+// Distinct from window:close above: that one triggers the window's own
+// close handler, which now hides to tray instead of exiting (see
+// createTray()'s comment) - "File > Exit" in the app's own menu bar means
+// a real quit, the same as the tray's own Quit item.
+ipcMain.on("app:quit", () => {
+  isQuitting = true;
+  app.quit();
+});
 
 // WhatsApp/Zoom-style behavior: an incoming call brings the app to the
 // front on its own, rather than leaving it to a background OS notification
@@ -253,6 +350,25 @@ ipcMain.handle("device:setName", async (_e, name) => {
   await stopBackend();
   startBackend();
   return true;
+});
+
+// Preferences' discovery-method picker (design reference 10.10) - the
+// backend only reads AGORA_DISCOVERY_MODE once, at PeerDiscovery
+// construction (see discovery.py's own mode gating), so changing it needs
+// the same stop/persist/restart dance device:setName above already does.
+ipcMain.handle("discovery:setMode", async (_e, mode) => {
+  const identity = loadOrCreateIdentity();
+  identity.discoveryMode = ["auto", "mdns", "udp"].includes(mode) ? mode : "auto";
+  saveIdentity(identity);
+  await stopBackend();
+  startBackend();
+  return true;
+});
+
+ipcMain.handle("app:getLaunchAtLogin", () => app.getLoginItemSettings().openAtLogin);
+ipcMain.handle("app:setLaunchAtLogin", (_e, enabled) => {
+  app.setLoginItemSettings({ openAtLogin: Boolean(enabled) });
+  return app.getLoginItemSettings().openAtLogin;
 });
 
 ipcMain.handle("dialog:pickFile", async (_e, category) => {
@@ -635,6 +751,11 @@ if (!gotLock) {
     } catch (e) {
       logToFile(`createWindow() threw: ${e.stack || e}`);
     }
+    try {
+      createTray();
+    } catch (e) {
+      logToFile(`createTray() threw: ${e.stack || e}`);
+    }
 
     // Without this, navigator.mediaDevices.getDisplayMedia() in the
     // renderer just rejects outright under Electron - there's no default
@@ -670,5 +791,9 @@ if (!gotLock) {
     if (process.platform !== "darwin") app.quit();
   });
 
-  app.on("before-quit", stopBackend);
+  app.on("before-quit", () => {
+    isQuitting = true;
+    if (trayPollInterval) clearInterval(trayPollInterval);
+    stopBackend();
+  });
 }
