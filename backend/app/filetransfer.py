@@ -14,6 +14,8 @@ Wire protocol (control messages, JSON, over the existing WebSocket):
     file_offer_response {transfer_id, accept, port, resume_at}
     file_complete       {transfer_id}
     file_failed         {transfer_id, reason}
+    file_played         {transfer_id} - voice-message read receipt, sent by the
+                         receiver once it actually plays the clip back
 
 Data channel (raw TCP, listener opened by the receiver on accept, sender
 connects to it): each chunk is encrypted with the same per-peer shared key
@@ -118,6 +120,13 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+class TransferCancelled(Exception):
+    """Raised inside _stream_to_peer's own chunk loop once cancel() has set
+    the flag for this transfer_id - caught one level up in _offer_and_stream,
+    which does the actual status update (see cancel()'s own comment for why
+    cancel() itself never touches a running transfer's state directly)."""
+
+
 class FileTransferService:
     def __init__(
         self,
@@ -128,6 +137,7 @@ class FileTransferService:
         on_offer: Optional[Callable[[IncomingFileOffer], None]] = None,
         on_progress: Optional[Callable[[str, int, int], None]] = None,  # transfer_id, bytes_so_far, total
         on_received: Optional[Callable[[str, str, Optional[str]], None]] = None,  # transfer_id, status, saved_path
+        on_played: Optional[Callable[[str], None]] = None,  # transfer_id - the *sender's* own row was just marked played
         is_call_active: Optional[Callable[[], bool]] = None,
     ):
         self.discovery = discovery
@@ -137,6 +147,7 @@ class FileTransferService:
         self.incoming_dir = self.downloads_dir / ".incoming"
         self.downloads_dir.mkdir(parents=True, exist_ok=True)
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
+        self.on_played = on_played
         self.on_offer = on_offer
         self.on_progress = on_progress
         self.on_received = on_received
@@ -154,6 +165,23 @@ class FileTransferService:
         self._outgoing_paths: dict[str, str] = {}
         self._listeners: dict[str, asyncio.AbstractServer] = {}
         self._flush_task: Optional[asyncio.Task] = None
+        # Checked by whichever side's own stream loop is actually running
+        # right now (_stream_to_peer for the sender, _receive for the
+        # receiver) - cancel() itself never tears down an in-progress
+        # transfer directly, see cancel()'s own comment for why.
+        self._cancelled: set[str] = set()
+        # speed/ETA for the Transfers panel - transfer_id -> (bytes_so_far,
+        # total, first_seen_at, last_seen_at). Purely in-memory, derived
+        # from the exact same on_progress calls already driving the old
+        # per-conversation progress bar, not a second measurement.
+        self._progress_stats: dict[str, dict] = {}
+        # The Preferences diagnostics panel's "throughput peak" - the
+        # highest speed get_transfer_stats has ever actually computed for
+        # a real transfer on this device, updated opportunistically each
+        # time that's queried rather than by a separate continuous
+        # sampler, which would be real engineering this one read-only
+        # number doesn't warrant.
+        self._peak_speed_bps = 0
 
         messaging.add_control_handler(self._on_control)
 
@@ -163,6 +191,36 @@ class FileTransferService:
     async def stop(self) -> None:
         if self._flush_task:
             self._flush_task.cancel()
+
+    def _record_progress(self, transfer_id: str, bytes_so_far: int, total: int) -> None:
+        stats = self._progress_stats.get(transfer_id)
+        now = time.monotonic()
+        if stats is None:
+            self._progress_stats[transfer_id] = {"started_at": now, "bytes_so_far": bytes_so_far, "total": total}
+        else:
+            stats["bytes_so_far"] = bytes_so_far
+            stats["total"] = total
+
+    def get_transfer_stats(self, transfer_id: str) -> Optional[dict]:
+        """speed_bps/eta_sec for the Transfers panel - average throughput
+        since this transfer started, not an instantaneous per-chunk rate
+        (which would jitter too much chunk to chunk to show as a stable
+        number). None once a transfer is no longer actively tracked here
+        (finished, or this process never saw it progress at all)."""
+        stats = self._progress_stats.get(transfer_id)
+        if stats is None:
+            return None
+        elapsed = time.monotonic() - stats["started_at"]
+        if elapsed <= 0 or stats["bytes_so_far"] <= 0:
+            return {"speed_bps": 0, "eta_sec": None}
+        speed_bps = stats["bytes_so_far"] / elapsed
+        remaining = stats["total"] - stats["bytes_so_far"]
+        eta_sec = (remaining / speed_bps) if speed_bps > 0 else None
+        self._peak_speed_bps = max(self._peak_speed_bps, speed_bps)
+        return {"speed_bps": round(speed_bps), "eta_sec": round(eta_sec, 1) if eta_sec is not None else None}
+
+    def get_peak_speed_bps(self) -> int:
+        return round(self._peak_speed_bps)
 
     # -- sending -------------------------------------------------------
 
@@ -273,7 +331,9 @@ class FileTransferService:
             await self.store.update_file_status(transfer_id, "failed")
             raise ConnectionError(f"peer {peer_id} never responded to the file offer")
         if not response.get("accept"):
-            await self.store.update_file_status(transfer_id, "declined")
+            status = "cancelled" if transfer_id in self._cancelled else "declined"
+            self._cancelled.discard(transfer_id)
+            await self.store.update_file_status(transfer_id, status)
             return transfer_id
 
         peer = next((p for p in self.discovery.registry.list() if p.peer_id == peer_id), None)
@@ -297,14 +357,46 @@ class FileTransferService:
 
         try:
             await self._stream_to_peer(peer.address, response["port"], path, response.get("resume_at", 0), transfer_id, size, send_key)
+        except TransferCancelled:
+            self._cancelled.discard(transfer_id)
+            self._result_waiters.pop(transfer_id, None)
+            self._progress_stats.pop(transfer_id, None)
+            await self.store.update_file_status(transfer_id, "cancelled")
+            if self.on_received:
+                self.on_received(transfer_id, "cancelled", None)
+            return transfer_id
         except OSError:
-            # Dropped mid-stream (WiFi hiccup, peer closed). Leave it
-            # 'offered' rather than 'failed' - resend() picks up from here.
+            # A real connection drop (WiFi hiccup, peer closed) and the
+            # receiver explicitly cancelling look identical at the TCP
+            # level from here (both end with this socket closing early) -
+            # the receiver's own file_failed(reason="cancelled") control
+            # message is what actually distinguishes them, and it travels
+            # over a separate, already-open connection whose message can
+            # genuinely arrive a beat after this exception fires (confirmed
+            # by testing: an immediate, un-waited check here caught the
+            # race and lost, landing on "offered" instead of "cancelled").
+            # It's already in flight by the time the data socket errors, so
+            # a short bounded wait resolves it almost every time; only a
+            # real, unexplained drop (no message ever coming) should fall
+            # through to the generic "offered" below.
+            try:
+                result = await asyncio.wait_for(result_future, timeout=2.0)
+                self._progress_stats.pop(transfer_id, None)
+                await self.store.update_file_status(transfer_id, result["status"])
+                if self.on_received:
+                    self.on_received(transfer_id, result["status"], None)
+                return transfer_id
+            except asyncio.TimeoutError:
+                pass
+            # Otherwise a genuine drop with no explanation from the peer
+            # yet - leave it 'offered' rather than 'failed', resend()
+            # picks up from here.
             self._result_waiters.pop(transfer_id, None)
             await self.store.update_file_status(transfer_id, "offered")
             raise
 
         result = await result_future
+        self._progress_stats.pop(transfer_id, None)
         await self.store.update_file_status(transfer_id, result["status"])
         return transfer_id
 
@@ -325,8 +417,11 @@ class FileTransferService:
                     await writer.drain()
                     write_elapsed = time.monotonic() - write_start
                     sent += len(chunk)
+                    self._record_progress(transfer_id, sent, total_size)
                     if self.on_progress:
                         self.on_progress(transfer_id, sent, total_size)
+                    if transfer_id in self._cancelled:
+                        raise TransferCancelled()
                     if self.is_call_active():
                         # Throttle, don't stop - a call in progress means the
                         # LAN link matters more for voice/video than transfer
@@ -349,7 +444,28 @@ class FileTransferService:
         elif mtype in ("file_complete", "file_failed"):
             fut = self._result_waiters.pop(msg["transfer_id"], None)
             if fut and not fut.done():
-                fut.set_result({"status": "completed" if mtype == "file_complete" else "failed", "reason": msg.get("reason")})
+                if mtype == "file_complete":
+                    status = "completed"
+                elif msg.get("reason") == "cancelled":
+                    status = "cancelled"
+                else:
+                    status = "failed"
+                fut.set_result({"status": status, "reason": msg.get("reason")})
+        elif mtype == "file_played":
+            transfer_id = msg["transfer_id"]
+            await self.store.mark_file_played(transfer_id)
+            if self.on_played:
+                self.on_played(transfer_id)
+
+    async def mark_played(self, transfer_id: str) -> None:
+        """Called on the *receiving* side once it actually plays a voice
+        message back, to let the sender show "Played by {name}". A no-op
+        if the record is missing or this side was actually the sender
+        (only the receiver's playback counts as a read receipt)."""
+        record = await self.store.get_file(transfer_id)
+        if not record or record.direction != "received":
+            return
+        await self.messaging.send_control(record.peer_id, {"type": "file_played", "transfer_id": transfer_id})
 
     async def _handle_offer(self, peer_id: str, msg: dict) -> None:
         transfer_id = msg["transfer_id"]
@@ -374,6 +490,38 @@ class FileTransferService:
             return
         await self.store.update_file_status(transfer_id, "declined")
         await self.messaging.send_control(record.peer_id, {"type": "file_offer_response", "transfer_id": transfer_id, "accept": False})
+
+    async def cancel(self, transfer_id: str) -> None:
+        """The Transfers panel's cancel action, for either direction and
+        at any stage. Deliberately never tears down an in-progress stream's
+        state directly from here - the file handle it's writing to may
+        still be open at this exact instant on the receiving side, and
+        deleting an open file raises PermissionError on Windows (same
+        limitation _receive's own untrusted_stream handling already works
+        around). Instead this only ever sets a flag or resolves a pending
+        future; whichever loop is actually running right now notices on
+        its own next step and does its own real cleanup from there."""
+        record = await self.store.get_file(transfer_id)
+        if record is None:
+            return
+        if record.status == "awaiting_accept" and record.direction == "received":
+            await self.decline(transfer_id)
+            return
+        if record.status == "offered" and record.direction == "sent":
+            self._cancelled.add(transfer_id)
+            fut = self._offer_waiters.pop(transfer_id, None)
+            if fut and not fut.done():
+                fut.set_result({"accept": False})
+            return
+        if record.status in ("transferring", "accepted"):
+            # "transferring" is the sender's own status name for an active
+            # stream; the receiver's row never actually becomes
+            # "transferring" at all - it goes straight from "accepted" (set
+            # the moment its listener opens) to a terminal status once
+            # _receive finishes, so "accepted" has to be treated as "active"
+            # here too, or a receiver-initiated cancel during that entire
+            # window would silently do nothing.
+            self._cancelled.add(transfer_id)
 
     async def accept(self, transfer_id: str) -> None:
         """Explicit human decision required before this is ever called -
@@ -419,8 +567,16 @@ class FileTransferService:
             # broken by that fix was trying to unlink() from inside this
             # same `with open(...)` block).
             untrusted_stream = False
+            # Set by cancel() while this loop is still running - checked
+            # (and cleaned up) only after the file handle below is closed,
+            # same Windows-can't-delete-an-open-file reasoning untrusted_
+            # stream's own handling already works around.
+            cancelled_stream = False
             with open(part_path, mode) as f:
                 while True:
+                    if transfer_id in self._cancelled:
+                        cancelled_stream = True
+                        break
                     try:
                         prefix = await asyncio.wait_for(reader.readexactly(LENGTH_PREFIX.size), timeout=CHUNK_READ_TIMEOUT_SECONDS)
                         (blob_len,) = LENGTH_PREFIX.unpack(prefix)
@@ -452,8 +608,18 @@ class FileTransferService:
                         break
                     f.write(chunk)
                     received += len(chunk)
+                    self._record_progress(transfer_id, received, record.size)
                     if self.on_progress:
                         self.on_progress(transfer_id, received, record.size)
+
+            if cancelled_stream:
+                self._cancelled.discard(transfer_id)
+                part_path.unlink(missing_ok=True)
+                await self.store.update_file_status(transfer_id, "cancelled")
+                await self.messaging.send_control(record.peer_id, {"type": "file_failed", "transfer_id": transfer_id, "reason": "cancelled"})
+                if self.on_received:
+                    self.on_received(transfer_id, "cancelled", None)
+                return
 
             if untrusted_stream:
                 part_path.unlink(missing_ok=True)
@@ -489,6 +655,7 @@ class FileTransferService:
             if self.on_received:
                 self.on_received(transfer_id, "completed", str(dest_path))
         finally:
+            self._progress_stats.pop(transfer_id, None)
             if server:
                 server.close()
             writer.close()

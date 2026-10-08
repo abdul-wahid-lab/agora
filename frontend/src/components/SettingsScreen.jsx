@@ -3,6 +3,8 @@ import { api } from "../api";
 import { paletteAt, initials, SELF_AVATAR_INDEX_KEY } from "../lib/avatar";
 import { useConversations } from "../hooks/useConversations";
 import { useSelfAvatarPhoto } from "../hooks/useSelfAvatarPhoto";
+import { getTranscribeEnabled, setTranscribeEnabled, getDefaultSpeed, setDefaultSpeed } from "../lib/voiceSettings";
+import { formatFileSize } from "../lib/fileTypes";
 
 // Matches design screens 6.1/6.3/6.4/6.5, but NOT verbatim where the design
 // would make this screen lie: real transport encryption shipped in Step 25
@@ -21,6 +23,8 @@ export default function SettingsScreen({ me }) {
 
   if (view === "privacy") return <PrivacyView onBack={() => setView("home")} />;
   if (view === "notifications") return <NotificationsView onBack={() => setView("home")} />;
+  if (view === "voiceMessages") return <VoiceMessagesView onBack={() => setView("home")} />;
+  if (view === "preferences") return <PreferencesView onBack={() => setView("home")} />;
   if (view === "about") return <AboutView onBack={() => setView("home")} />;
 
   async function handleChoosePhoto() {
@@ -105,6 +109,8 @@ export default function SettingsScreen({ me }) {
       <div style={{ display: "flex", flexDirection: "column", background: "var(--surface)", border: "1px solid var(--border-soft)", borderRadius: 18, overflow: "hidden" }}>
         <NavRow label="Privacy & security" onClick={() => setView("privacy")} />
         <NavRow label="Notifications" onClick={() => setView("notifications")} />
+        <NavRow label="Voice messages" onClick={() => setView("voiceMessages")} />
+        <NavRow label="Preferences" onClick={() => setView("preferences")} />
         <NavRow label="About & help" onClick={() => setView("about")} last />
       </div>
 
@@ -284,6 +290,293 @@ function NotificationsView({ onBack }) {
         <div style={{ font: '600 10.5px/1 "IBM Plex Mono", monospace', letterSpacing: "0.1em", color: "var(--text-3)", padding: "0 2px" }}>WHAT ACTUALLY HAPPENS TODAY</div>
         <div style={{ padding: 16, borderRadius: 18, background: "var(--surface)", border: "1px solid var(--border-soft)", fontSize: 13, color: "var(--text-2)", lineHeight: 1.6 }}>
           An incoming call always rings and brings the window to the front while the app is open, that's not optional and doesn't need this permission. This permission only affects the extra OS-level toast Agora tries to show when the window isn't focused. There's no per-category (messages/calls) or per-conversation preference yet, that's real work not built, this screen won't pretend a toggle exists for it.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VoiceMessagesView({ onBack }) {
+  const [transcribeEnabled, setTranscribeEnabledState] = useState(getTranscribeEnabled);
+  const [defaultSpeed, setDefaultSpeedState] = useState(getDefaultSpeed);
+
+  function handleToggleTranscribe() {
+    const next = !transcribeEnabled;
+    setTranscribeEnabled(next);
+    setTranscribeEnabledState(next);
+  }
+
+  function handlePickSpeed(speed) {
+    setDefaultSpeed(speed);
+    setDefaultSpeedState(speed);
+  }
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", padding: "22px 26px", gap: 18, overflowY: "auto" }}>
+      <SubHeader title="Voice messages" onBack={onBack} />
+
+      <div style={{ display: "flex", flexDirection: "column", background: "var(--surface)", border: "1px solid var(--border-soft)", borderRadius: 18, overflow: "hidden" }}>
+        <button
+          onClick={handleToggleTranscribe}
+          style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 16, background: "transparent", border: "none", borderBottom: "1px solid var(--divider)" }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, textAlign: "left" }}>
+            <div style={{ fontSize: 14.5, fontWeight: 600, color: "var(--text)" }}>On-device transcription</div>
+            <div className="mono" style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
+              Shows a "Transcribe" button on voice bubbles. Runs fully on this device, nothing is ever uploaded.
+            </div>
+          </div>
+          <Toggle on={transcribeEnabled} />
+        </button>
+
+        <div style={{ padding: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ fontSize: 14.5, fontWeight: 600, color: "var(--text)" }}>Default playback speed</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[1, 1.5, 2].map((s) => (
+              <button
+                key={s}
+                onClick={() => handlePickSpeed(s)}
+                className="mono"
+                style={{
+                  padding: "6px 11px",
+                  borderRadius: 10,
+                  border: `1px solid ${defaultSpeed === s ? "var(--accent)" : "var(--border)"}`,
+                  background: defaultSpeed === s ? "var(--accent-soft)" : "transparent",
+                  color: defaultSpeed === s ? "var(--accent-strong)" : "var(--text-muted)",
+                  fontSize: 12.5,
+                  fontWeight: 700,
+                }}
+              >
+                {s}×
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+        <div style={{ font: '600 10.5px/1 "IBM Plex Mono", monospace', letterSpacing: "0.1em", color: "var(--text-3)", padding: "0 2px" }}>RECORDING QUALITY</div>
+        <div style={{ padding: 16, borderRadius: 18, background: "var(--surface)", border: "1px solid var(--border-soft)", fontSize: 13, color: "var(--text-2)", lineHeight: 1.6 }}>
+          Voice notes record through the browser's own microphone encoder (WebM/Opus, variable bitrate) - there's no quality picker, since that encoder doesn't expose one to choose from. "Raise to listen" (hold the device to your ear to play a note back) is a phone gesture with no desktop equivalent, so it isn't part of this screen.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const STORAGE_CATEGORIES = {
+  Images: new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]),
+  Video: new Set(["mov", "mp4", "avi", "mkv"]),
+  "Voice notes": new Set(["webm"]),
+  Docs: new Set(["pdf", "doc", "docx", "txt", "md", "xls", "xlsx", "ppt", "pptx"]),
+  Archives: new Set(["zip", "rar", "7z", "tar", "gz"]),
+  Apps: new Set(["apk", "exe", "msi", "appimage"]),
+};
+
+function categoryFor(filename) {
+  const ext = (filename.split(".").pop() || "").toLowerCase();
+  for (const [name, exts] of Object.entries(STORAGE_CATEGORIES)) {
+    if (exts.has(ext)) return name;
+  }
+  return "Other";
+}
+
+const DISCOVERY_MODES = [
+  { value: "auto", label: "Automatic", description: "mDNS and UDP broadcast both, whichever finds a peer first" },
+  { value: "mdns", label: "mDNS only", description: "Skip UDP broadcast entirely" },
+  { value: "udp", label: "UDP broadcast only", description: "Skip mDNS entirely - useful on networks that filter it" },
+];
+
+function PreferencesView({ onBack }) {
+  const hasElectron = Boolean(window.electronAPI);
+  const [launchAtLogin, setLaunchAtLoginState] = useState(false);
+  const [discoveryMode, setDiscoveryModeState] = useState("auto");
+  const [savingMode, setSavingMode] = useState(false);
+  const [files, setFiles] = useState([]);
+  const [clearingReceived, setClearingReceived] = useState(false);
+  const [diagnostics, setDiagnostics] = useState(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (hasElectron) window.electronAPI.getLaunchAtLogin().then(setLaunchAtLoginState).catch(() => {});
+    api.allFiles().then(setFiles).catch(() => {});
+    function loadDiagnostics() {
+      api.diagnostics().then((d) => {
+        setDiagnostics(d);
+        setDiscoveryModeState(d.discovery_mode);
+      }).catch(() => {});
+    }
+    loadDiagnostics();
+    const interval = setInterval(loadDiagnostics, 5000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleToggleLaunchAtLogin() {
+    const next = await window.electronAPI.setLaunchAtLogin(!launchAtLogin);
+    setLaunchAtLoginState(next);
+  }
+
+  async function handlePickDiscoveryMode(mode) {
+    if (mode === discoveryMode || savingMode) return;
+    setSavingMode(true);
+    setDiscoveryModeState(mode);
+    // Takes effect on the restart setDiscoveryMode itself triggers (the
+    // backend only reads AGORA_DISCOVERY_MODE once, at startup) - same
+    // restart this screen's own device-name editing already causes
+    // elsewhere, not a new kind of disruption.
+    await window.electronAPI.setDiscoveryMode(mode).catch(() => {});
+    setSavingMode(false);
+  }
+
+  // Only files that genuinely still occupy space on this device - a plain
+  // sent file's bytes are never kept locally after sending (saved_path
+  // stays null, see filetransfer.py's send_file), so counting every
+  // "completed" row regardless of direction would overstate real local
+  // storage use with transfer history that isn't actually sitting on disk
+  // here. The one exception already baked into saved_path itself: a
+  // sent voice note does keep a local copy (keep_sender_copy), which is
+  // exactly why checking saved_path, not direction, is the honest signal.
+  const byCategory = {};
+  let totalBytes = 0;
+  for (const f of files) {
+    if (f.status !== "completed" || !f.saved_path) continue;
+    const cat = categoryFor(f.filename);
+    byCategory[cat] = (byCategory[cat] || 0) + f.size;
+    totalBytes += f.size;
+  }
+  const categories = Object.entries(byCategory).sort((a, b) => b[1] - a[1]);
+  const receivedCount = files.filter((f) => f.direction === "received" && f.status === "completed").length;
+
+  async function handleClearReceived() {
+    const received = files.filter((f) => f.direction === "received" && f.status === "completed");
+    if (received.length === 0) return;
+    if (!window.confirm(`Delete ${received.length} received file${received.length === 1 ? "" : "s"} from this device? This can't be undone.`)) return;
+    setClearingReceived(true);
+    await Promise.all(received.map((f) => api.deleteFile(f.transfer_id).catch(() => {})));
+    api.allFiles().then(setFiles).catch(() => {});
+    setClearingReceived(false);
+  }
+
+  function handleCopyDiagnostics() {
+    if (!diagnostics) return;
+    const keyRate = diagnostics.reachable_peer_count > 0 ? Math.round((diagnostics.key_resolved_count / diagnostics.reachable_peer_count) * 100) : null;
+    const text = [
+      `Agora diagnostics`,
+      `device id: ${diagnostics.device_id}`,
+      `device name: ${diagnostics.device_name}`,
+      `discovery mode: ${diagnostics.discovery_mode}`,
+      `reachable peers: ${diagnostics.reachable_peer_count}`,
+      `key-resolved rate: ${keyRate != null ? `${keyRate}%` : "n/a (no peers nearby)"}`,
+      `peak throughput: ${diagnostics.peak_throughput_bps ? formatFileSize(diagnostics.peak_throughput_bps) + "/s" : "none observed yet"}`,
+      `uptime: ${Math.floor(diagnostics.uptime_sec / 60)}m ${diagnostics.uptime_sec % 60}s`,
+    ].join("\n");
+    navigator.clipboard.writeText(text).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  return (
+    <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", padding: "22px 26px", gap: 18, overflowY: "auto" }}>
+      <SubHeader title="Preferences" onBack={onBack} />
+
+      <div style={{ display: "flex", flexDirection: "column", background: "var(--surface)", border: "1px solid var(--border-soft)", borderRadius: 18, overflow: "hidden" }}>
+        <button
+          onClick={hasElectron ? handleToggleLaunchAtLogin : undefined}
+          disabled={!hasElectron}
+          style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 16, background: "transparent", border: "none" }}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 3, textAlign: "left" }}>
+            <div style={{ fontSize: 14.5, fontWeight: 600, color: "var(--text)" }}>Start Agora at login</div>
+            <div className="mono" style={{ fontSize: 11.5, color: "var(--text-muted)" }}>
+              {hasElectron ? "Launches quietly in the background when you sign in" : "Only available in the desktop app"}
+            </div>
+          </div>
+          <Toggle on={launchAtLogin} disabled={!hasElectron} />
+        </button>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+        <div style={{ font: '600 10.5px/1 "IBM Plex Mono", monospace', letterSpacing: "0.1em", color: "var(--text-3)", padding: "0 2px" }}>DISCOVERY METHOD</div>
+        <div style={{ display: "flex", flexDirection: "column", background: "var(--surface)", border: "1px solid var(--border-soft)", borderRadius: 18, overflow: "hidden" }}>
+          {DISCOVERY_MODES.map((m, i) => (
+            <button
+              key={m.value}
+              onClick={() => hasElectron && handlePickDiscoveryMode(m.value)}
+              disabled={!hasElectron || savingMode}
+              style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: 16, background: "transparent", border: "none", borderBottom: i < DISCOVERY_MODES.length - 1 ? "1px solid var(--divider)" : "none" }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: 3, textAlign: "left" }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>{m.label}</div>
+                <div className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>{m.description}</div>
+              </div>
+              <span style={{ width: 18, height: 18, flexShrink: 0, borderRadius: 99, border: `2px solid ${discoveryMode === m.value ? "var(--accent)" : "var(--border)"}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                {discoveryMode === m.value && <span style={{ width: 9, height: 9, borderRadius: 99, background: "var(--accent)" }} />}
+              </span>
+            </button>
+          ))}
+        </div>
+        {!hasElectron && <div style={{ fontSize: 11.5, color: "var(--text-3)", padding: "0 2px" }}>Only available in the desktop app.</div>}
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+        <div style={{ font: '600 10.5px/1 "IBM Plex Mono", monospace', letterSpacing: "0.1em", color: "var(--text-3)", padding: "0 2px" }}>STORAGE · {formatFileSize(totalBytes)}</div>
+        <div style={{ display: "flex", flexDirection: "column", background: "var(--surface)", border: "1px solid var(--border-soft)", borderRadius: 18, overflow: "hidden" }}>
+          {categories.length === 0 && (
+            <div style={{ padding: 16, fontSize: 13, color: "var(--text-3)" }}>Nothing saved yet.</div>
+          )}
+          {categories.map(([name, bytes], i) => (
+            <div key={name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "13px 16px", borderBottom: i < categories.length - 1 ? "1px solid var(--divider)" : "none" }}>
+              <span style={{ fontSize: 13.5, fontWeight: 600 }}>{name}</span>
+              <span className="mono" style={{ fontSize: 12, color: "var(--text-muted)" }}>{formatFileSize(bytes)}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={() => window.electronAPI?.openDownloadsFolder?.()}
+            disabled={!hasElectron}
+            style={{ flex: 1, padding: "10px 0", borderRadius: 12, background: "var(--surface-2)", border: "none", fontSize: 12.5, fontWeight: 600, color: hasElectron ? "var(--text-strong)" : "var(--text-3)" }}
+          >
+            Reveal folder
+          </button>
+          <button
+            onClick={handleClearReceived}
+            disabled={clearingReceived || receivedCount === 0}
+            style={{ flex: 1, padding: "10px 0", borderRadius: 12, background: "transparent", border: "1px solid var(--border)", fontSize: 12.5, fontWeight: 600, color: receivedCount === 0 ? "var(--text-3)" : "var(--danger)" }}
+          >
+            {clearingReceived ? "Clearing…" : `Clear received files${receivedCount ? ` (${receivedCount})` : ""}`}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+        <div style={{ font: '600 10.5px/1 "IBM Plex Mono", monospace', letterSpacing: "0.1em", color: "var(--text-3)", padding: "0 2px" }}>DIAGNOSTICS</div>
+        <div style={{ padding: 16, borderRadius: 18, background: "var(--surface)", border: "1px solid var(--border-soft)", display: "flex", flexDirection: "column", gap: 10 }}>
+          {diagnostics ? (
+            <div className="mono" style={{ fontSize: 11.5, lineHeight: 1.9, color: "var(--text-2)" }}>
+              device id &nbsp;{diagnostics.device_id.slice(0, 13)}…
+              <br />
+              reachable peers &nbsp;{diagnostics.reachable_peer_count}
+              <br />
+              key-resolved rate &nbsp;
+              {diagnostics.reachable_peer_count > 0 ? `${Math.round((diagnostics.key_resolved_count / diagnostics.reachable_peer_count) * 100)}%` : "n/a, no peers nearby"}
+              <br />
+              throughput peak &nbsp;{diagnostics.peak_throughput_bps ? `${formatFileSize(diagnostics.peak_throughput_bps)}/s` : "none observed yet"}
+              <br />
+              uptime &nbsp;{Math.floor(diagnostics.uptime_sec / 60)}m {diagnostics.uptime_sec % 60}s
+            </div>
+          ) : (
+            <div style={{ fontSize: 12.5, color: "var(--text-3)" }}>Loading…</div>
+          )}
+          <button
+            onClick={handleCopyDiagnostics}
+            disabled={!diagnostics}
+            style={{ alignSelf: "flex-start", padding: "7px 13px", borderRadius: 10, background: "var(--surface-2)", border: "none", fontSize: 12, fontWeight: 600, color: "var(--text-strong)" }}
+          >
+            {copied ? "Copied" : "Copy diagnostics"}
+          </button>
         </div>
       </div>
     </div>

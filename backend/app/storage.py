@@ -184,6 +184,7 @@ class FileRecord:
     saved_path: Optional[str]
     ts: float
     group_id: Optional[str] = None
+    played_at: Optional[float] = None
 
 
 @dataclass
@@ -261,6 +262,15 @@ class MessageStore:
         existing_columns = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
         if "group_id" not in existing_columns:
             conn.execute("ALTER TABLE files ADD COLUMN group_id TEXT")
+        if "played_at" not in existing_columns:
+            # Voice-message read receipts (see api.py's mark_file_played) -
+            # when the *other* side actually played this transfer back, not
+            # just when it finished downloading. Only ever meaningful on a
+            # "sent" row (the sender is who wants to know "did they listen
+            # to it"), but added to every row rather than a separate table,
+            # same reasoning saved_path already uses for a field that's
+            # only ever populated on one direction.
+            conn.execute("ALTER TABLE files ADD COLUMN played_at REAL")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_files_group ON files(group_id, ts)")
 
         known_peers_columns = {row[1] for row in conn.execute("PRAGMA table_info(known_peers)").fetchall()}
@@ -397,13 +407,13 @@ class MessageStore:
     async def get_file(self, transfer_id: str) -> Optional[FileRecord]:
         def _op(conn: sqlite3.Connection) -> Optional[FileRecord]:
             row = conn.execute(
-                "SELECT transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts, group_id "
+                "SELECT transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts, group_id, played_at "
                 "FROM files WHERE transfer_id = ?",
                 (transfer_id,),
             ).fetchone()
             if row is None:
                 return None
-            return FileRecord(row[0], row[1], row[2], row[3], row[4], row[5], bool(row[6]), row[7], row[8], row[9], row[10])
+            return FileRecord(row[0], row[1], row[2], row[3], row[4], row[5], bool(row[6]), row[7], row[8], row[9], row[10], row[11])
 
         return await asyncio.to_thread(self._run, _op)
 
@@ -414,24 +424,38 @@ class MessageStore:
 
         def _op(conn: sqlite3.Connection) -> list[FileRecord]:
             rows = conn.execute(
-                "SELECT transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts, group_id "
+                "SELECT transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts, group_id, played_at "
                 "FROM files ORDER BY ts DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-            return [FileRecord(r[0], r[1], r[2], r[3], r[4], r[5], bool(r[6]), r[7], r[8], r[9], r[10]) for r in rows]
+            return [FileRecord(r[0], r[1], r[2], r[3], r[4], r[5], bool(r[6]), r[7], r[8], r[9], r[10], r[11]) for r in rows]
 
         return await asyncio.to_thread(self._run, _op)
 
     async def list_files(self, peer_id: str, limit: int = 50) -> list[FileRecord]:
         def _op(conn: sqlite3.Connection) -> list[FileRecord]:
             rows = conn.execute(
-                "SELECT transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts, group_id "
+                "SELECT transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts, group_id, played_at "
                 "FROM files WHERE peer_id = ? ORDER BY ts ASC LIMIT ?",
                 (peer_id, limit),
             ).fetchall()
-            return [FileRecord(r[0], r[1], r[2], r[3], r[4], r[5], bool(r[6]), r[7], r[8], r[9], r[10]) for r in rows]
+            return [FileRecord(r[0], r[1], r[2], r[3], r[4], r[5], bool(r[6]), r[7], r[8], r[9], r[10], r[11]) for r in rows]
 
         return await asyncio.to_thread(self._run, _op)
+
+    async def mark_file_played(self, transfer_id: str, played_at: Optional[float] = None) -> None:
+        """Voice-message read receipt: called on the *sender's* own row once
+        the other side actually plays the clip back (see api.py's
+        mark_file_played and the file_played control message in
+        messaging.py). Only ever set once - a replay doesn't move the
+        timestamp - so this is a no-op past the first call."""
+        played_at = played_at if played_at is not None else time.time()
+
+        def _op(conn: sqlite3.Connection):
+            conn.execute("UPDATE files SET played_at = ? WHERE transfer_id = ? AND played_at IS NULL", (played_at, transfer_id))
+            conn.commit()
+
+        await asyncio.to_thread(self._run, _op)
 
     async def delete_file(self, transfer_id: str) -> None:
         """'Delete for me': removes this device's own local record of one
@@ -453,11 +477,11 @@ class MessageStore:
 
         def _op(conn: sqlite3.Connection) -> list[FileRecord]:
             rows = conn.execute(
-                "SELECT transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts, group_id "
+                "SELECT transfer_id, peer_id, direction, filename, size, sha256, is_executable, status, saved_path, ts, group_id, played_at "
                 "FROM files WHERE group_id = ? ORDER BY ts ASC LIMIT ?",
                 (group_id, limit),
             ).fetchall()
-            return [FileRecord(r[0], r[1], r[2], r[3], r[4], r[5], bool(r[6]), r[7], r[8], r[9], r[10]) for r in rows]
+            return [FileRecord(r[0], r[1], r[2], r[3], r[4], r[5], bool(r[6]), r[7], r[8], r[9], r[10], r[11]) for r in rows]
 
         return await asyncio.to_thread(self._run, _op)
 

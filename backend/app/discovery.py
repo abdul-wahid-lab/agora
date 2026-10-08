@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import platform
 import socket
 import threading
 import time
@@ -28,6 +29,24 @@ SERVICE_TYPE = "_lanchat._tcp.local."
 UDP_BROADCAST_PORT = 42424
 UDP_ANNOUNCE_INTERVAL_SEC = 3.0
 PEER_TTL_SEC = 10.0  # if we haven't heard from a peer in this long, drop it
+
+
+def detect_device_type() -> str:
+    """A real, honest device-type label ("Windows PC"/"Mac"/"Linux PC"),
+    not a fabricated specific model name - see the design reference's own
+    "MacBook Pro"/"Pixel" examples. Python has no portable, reliable way to
+    read the actual hardware model (that needs OS-specific native calls on
+    every platform), so this reports what it can genuinely know - the OS -
+    rather than inventing a plausible-looking model string with nothing
+    real behind it."""
+    system = platform.system()
+    if system == "Windows":
+        return "Windows PC"
+    if system == "Darwin":
+        return "Mac"
+    if system == "Linux":
+        return "Linux PC"
+    return "Unknown device"
 
 
 @dataclass
@@ -46,6 +65,7 @@ class Peer:
     # treats that as "can't encrypt to this peer yet" rather than ever
     # falling back to sending anything unencrypted.
     public_key: str = ""
+    device_type: str = ""
 
     def is_expired(self, now: Optional[float] = None) -> bool:
         return (now or time.time()) - self.last_seen > PEER_TTL_SEC
@@ -155,6 +175,7 @@ class _MdnsListener(ServiceListener):
                     port=port,
                     source="mdns",
                     public_key=public_key,
+                    device_type=props.get("device_type", ""),
                 )
             )
         except Exception:
@@ -173,10 +194,17 @@ class PeerDiscovery:
         signing_private_key: str = "",
         signing_public_key: str = "",
         on_verify_signing_key: Optional[Callable[[str, str], bool]] = None,
+        mode: str = "auto",
     ):
         self.device_name = device_name
         self.service_port = service_port
         self.peer_id = peer_id or str(uuid.uuid4())
+        # Preferences' discovery-method picker (design reference 10.10) -
+        # "auto" (both, the long-standing default), "mdns", or "udp". An
+        # unrecognized value falls back to "auto" rather than silently
+        # discovering nobody, since that's a far worse failure mode than
+        # ignoring a bad setting.
+        self.mode = mode if mode in ("auto", "mdns", "udp") else "auto"
         # Broadcast openly alongside peer_id/name - see crypto_identity.py.
         self.public_key = public_key
         # This device's own Ed25519 signing identity, and the callback used
@@ -205,8 +233,10 @@ class PeerDiscovery:
     # -- lifecycle -----------------------------------------------------
 
     def start(self) -> None:
-        self._start_mdns()
-        self._start_udp_fallback()
+        if self.mode in ("auto", "mdns"):
+            self._start_mdns()
+        if self.mode in ("auto", "udp"):
+            self._start_udp_fallback()
         self._sweep_thread = threading.Thread(target=self._sweep_loop, daemon=True)
         self._sweep_thread.start()
 
@@ -237,6 +267,7 @@ class PeerDiscovery:
             "address": local_ip,
             "port": self.service_port,
             "public_key": self.public_key,
+            "device_type": detect_device_type(),
         }
         if self.signing_private_key:
             payload["signing_public_key"] = self.signing_public_key
@@ -250,7 +281,7 @@ class PeerDiscovery:
     def _start_mdns(self) -> None:
         self._zc = Zeroconf()
         local_ip = _get_local_ip()
-        properties = {"peer_id": self.peer_id, "device_name": self.device_name, "public_key": self.public_key}
+        properties = {"peer_id": self.peer_id, "device_name": self.device_name, "public_key": self.public_key, "device_type": detect_device_type()}
         if self.signing_private_key:
             signature = crypto_identity.sign_announcement(self.signing_private_key, self.peer_id, local_ip, self.service_port, self.public_key)
             properties["signing_public_key"] = self.signing_public_key
@@ -293,6 +324,7 @@ class PeerDiscovery:
             "address": local_ip,
             "port": self.service_port,
             "public_key": self.public_key,
+            "device_type": detect_device_type(),
         }
         if self.signing_private_key:
             message["signing_public_key"] = self.signing_public_key
@@ -339,6 +371,7 @@ class PeerDiscovery:
                         port=port,
                         source="udp",
                         public_key=public_key,
+                        device_type=msg.get("device_type", ""),
                     )
                 )
             except (KeyError, ValueError, UnicodeDecodeError):

@@ -109,14 +109,44 @@ export default function PeerList({ peers, selected, onSelect, onRescan, onOpenQr
               </span>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: 600, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
-                <div className="mono" style={{ fontSize: 11.5, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {p.address}:{p.port} · via {p.source}
+                <div className="mono" style={{ fontSize: 11.5, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={`${p.address}:${p.port} · via ${p.source}`}>
+                  {p.device_type || `${p.address}:${p.port}`} · via {p.source}
                 </div>
               </div>
+              <ConnectionQualityDot rttMs={p.rtt_ms} quality={p.quality} />
             </button>
           );
         })}
       </div>
     </div>
+  );
+}
+
+// There's no real signal-strength hardware to read here (a LAN connection
+// isn't WiFi RSSI) - approximated instead from a real measured round-trip
+// time (see backend/app/latency.py's actual ping/pong), rather than a
+// fabricated signal-bars icon with nothing behind it.
+const QUALITY_COLOR = {
+  excellent: "var(--accent)",
+  good: "#8bab6f",
+  fair: "#d2a23c",
+  weak: "var(--danger)",
+  unreachable: "var(--text-3)",
+};
+
+function ConnectionQualityDot({ rttMs, quality }) {
+  const color = QUALITY_COLOR[quality] || QUALITY_COLOR.unreachable;
+  return (
+    <span
+      title={rttMs != null ? `${rttMs} ms · ${quality}` : "Latency not measured yet"}
+      style={{ flexShrink: 0, display: "flex", alignItems: "center", gap: 5 }}
+    >
+      <span style={{ width: 7, height: 7, borderRadius: 99, background: color }} />
+      {rttMs != null && (
+        <span className="mono" style={{ fontSize: 10, color: "var(--text-3)" }}>
+          {Math.round(rttMs)}ms
+        </span>
+      )}
+    </span>
   );
 }

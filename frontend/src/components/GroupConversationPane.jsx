@@ -123,7 +123,7 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
       if (evt.type === "group_message_deleted" && evt.group_id === current) {
         setMessages((prev) => prev.filter((m) => m.msg_id !== evt.msg_id));
       }
-      if ((evt.type === "file_offer" || evt.type === "file_status") && evt.group_id === current) {
+      if ((evt.type === "file_offer" || evt.type === "file_status" || evt.type === "file_played") && evt.group_id === current) {
         refreshFiles();
       }
     });
@@ -375,6 +375,7 @@ export default function GroupConversationPane({ group, onlineCount, onStartCall,
                 <GroupFileBubble
                   file={item.data}
                   senderName={item.data.direction === "received" ? memberName(item.data.peer_id) : "You"}
+                  memberName={memberName}
                   onAccept={() => handleAcceptClick(item.data)}
                   onDecline={() => handleDeclineClick(item.data)}
                   onRetry={() => handleRetryClick(item.data)}
@@ -498,7 +499,7 @@ function AttachMenuItem({ label, onClick }) {
   );
 }
 
-function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, onDelete, forwardCandidates, onForward }) {
+function GroupFileBubble({ file, senderName, memberName, onAccept, onDecline, onRetry, onDelete, forwardCandidates, onForward }) {
   const sent = file.direction === "sent";
   const { bg, text } = extStyle(file.filename);
   const isExecutable = EXECUTABLE_EXTS.has((file.filename.split(".").pop() || "").toLowerCase());
@@ -531,6 +532,10 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, onDel
   // completed file has a real local saved_path to re-send from.
   const canForward = !sent && file.status === "completed" && Boolean(file.saved_path);
   const { menuPosition, openContextMenu, closeContextMenu } = useContextMenu();
+  // Each recipient's copy is its own row with its own played_at (see
+  // storage.py's mark_file_played), so a group voice note can name exactly
+  // who's listened to it so far instead of a single yes/no like 1:1 does.
+  const playedByNames = sent && recipients ? recipients.filter((r) => r.played_at).map((r) => memberName(r.peer_id)) : [];
 
   return (
     <div style={{ maxWidth: "58%", alignSelf: sent ? "flex-end" : "flex-start", display: "flex", flexDirection: "column", gap: 4 }}>
@@ -556,7 +561,12 @@ function GroupFileBubble({ file, senderName, onAccept, onDecline, onRetry, onDel
             </div>
           </>
         ) : showAudio ? (
-          <VoiceBubblePlayer transferId={file.transfer_id} filename={file.filename} variant={sent ? "sent" : "received"} onFail={() => setAudioPreviewFailed(true)} />
+          <>
+            <VoiceBubblePlayer transferId={file.transfer_id} filename={file.filename} variant={sent ? "sent" : "received"} onFail={() => setAudioPreviewFailed(true)} />
+            {playedByNames.length > 0 && (
+              <div style={{ fontSize: 11, color: "#fbdcc8", textAlign: "right" }}>Played by {playedByNames.join(", ")}</div>
+            )}
+          </>
         ) : showVideo ? (
           <>
             <VideoPreview transferId={file.transfer_id} filename={file.filename} onFail={() => setVideoPreviewFailed(true)} />

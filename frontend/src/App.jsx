@@ -9,6 +9,7 @@ import InfoSidebar from "./components/InfoSidebar";
 import CallsScreen from "./components/CallsScreen";
 import CallOverlay from "./components/CallOverlay";
 import FilesScreen from "./components/FilesScreen";
+import TransfersPanel from "./components/TransfersPanel";
 import Onboarding from "./components/Onboarding";
 import ScanRadar from "./components/ScanRadar";
 import SettingsScreen from "./components/SettingsScreen";
@@ -449,6 +450,8 @@ export default function App() {
         {active === "calls" && <CallsScreen onPlaceCall={placeCall} filterPeerId={callsPeerFilter} onClearPeerFilter={() => setCallsPeerFilter(null)} />}
 
         {active === "files" && <FilesScreen initialPeerFilter={filesPeerFilter} onConsumeInitialPeerFilter={() => setFilesPeerFilter(null)} />}
+
+        {active === "transfers" && <TransfersPanel />}
 
         {active === "settings" && <SettingsScreen me={me} />}
       </div>

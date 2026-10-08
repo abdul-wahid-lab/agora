@@ -1639,60 +1639,135 @@ comparing the live app against `ui prompt/Agora-standalone.html`'s own ten
 "Desktop app" screens (10.1-10.10) - each needs a real new backend capability,
 not just a UI change, so each is its own scoped item rather than one big task.
 
-- [ ] **Per-peer latency and connection-quality display.** The reference shows
-  a signal-strength indicator next to each peer in the Nearby list and a
-  real round-trip latency (`2 ms`) in the call window and conversation
-  info sidebar, in place of this app's current raw IP:port display.
-  Nothing currently measures round-trip time between peers at all - needs
-  a real ping/pong mechanism over the existing control channel (or piggy-
-  backed on existing traffic) before any UI can show it honestly. Signal
-  "strength" specifically has no real underlying hardware signal this app
-  can read (software discovery over a LAN connection isn't WiFi RSSI) -
-  worth deciding whether to approximate it from latency/packet-loss
-  instead of literally faking a signal-bars icon with no real data behind
-  it.
+- [x] **Per-peer latency and connection-quality display** - done
+  2026-10-08, see BUILD_LOG Step 51. A real "ping"/"pong" control message
+  pair (`backend/app/latency.py`, a new `LatencyService`) rides the same
+  live per-peer WebSocket connection messaging.py already keeps open, so
+  the number is a genuine round trip measured right now, not a synthetic
+  or cached one - re-measured on a loop every 5s against every currently
+  visible peer. "Signal strength" is approximated from the measured RTT
+  (excellent/good/fair/weak/unreachable tiers) rather than faking a
+  signal-bars icon with no real hardware signal behind it (this is a LAN
+  software connection, not WiFi RSSI). Shown as a small colored dot + ms
+  in the Nearby list (`PeerList.jsx`) and a real `latency` line in the
+  conversation info sidebar (`InfoSidebar.jsx`, replacing its own prior
+  "real over fake" placeholder comment now that there's real data to
+  show). Live-verified: watched the actual measured value change between
+  live backend runs (14ms → 12ms → 11.7ms), confirming it's a live
+  measurement and not a hardcoded number. Full regression suite re-run
+  green, confirming the new control-message type doesn't interfere with
+  existing `file_offer`/`call_offer`/chat dispatch on the same channel.
 
-- [ ] **Device-type broadcast** ("MacBook Pro", "Pixel", "Studio desktop"
-  in the reference, instead of a raw IP address). Discovery's own
-  announcement payload would need a new field for this (OS/device name),
-  broadcast and shown the same way the existing device name already is -
-  a real wire-protocol addition, not just a frontend change.
+- [x] **Device-type broadcast** ("MacBook Pro", "Pixel", "Studio desktop"
+  in the reference, instead of a raw IP address) - done 2026-10-08, see
+  BUILD_LOG Step 52. A real `device_type` field added to the announcement
+  payload on both discovery paths (mDNS properties and UDP broadcast),
+  broadcast and received the same way `device_name` already is. Reports
+  an honest OS-level label ("Windows PC"/"Mac"/"Linux PC") rather than a
+  fabricated specific hardware model - Python has no portable way to read
+  the real model name, and the design's own "MacBook Pro"/"Pixel"
+  examples aren't something this app can genuinely know. Shown in the
+  Nearby list and the conversation sidebar's status pill in place of the
+  raw address; the technical CONNECTION panel still shows the real
+  address, kept deliberately for troubleshooting. Live-verified across
+  two real backend processes (each correctly broadcasts and receives
+  "Windows PC"), full regression suite re-run green.
 
-- [ ] **A dedicated Transfers panel** - bigger than originally scoped here
-  (see BUILD_LOG Step 43's 10.8 finding). The reference's file bubbles
-  show "received in 3 s · 78 MB/s" / "62% · sending · 84 MB/s · 7 s left"
-  with a cancel ✕, which still needs `filetransfer.py` to track and expose
-  real throughput over a transfer's lifetime and a real cancel path
-  through the offer/accept/stream state machine - but 10.8 shows this
-  living in a real *third sidebar panel*, "Transfers," listing every
-  active/recent transfer across every conversation at once (not just the
-  one bubble you're looking at), with per-transfer cancel/retry/reveal-in-
-  folder actions, a "Clear finished" action, and a persistent note that
-  transfers keep running even with the window closed to the tray. A real
-  standalone surface, not a bubble tweak - scope this as its own screen
-  before starting, not an incremental addition to the chat bubble.
+- [x] **A dedicated Transfers panel** - done 2026-10-08, see BUILD_LOG
+  Step 53, the third Round 2 item. A new rail entry, not a bubble tweak,
+  listing every active/recent transfer across every conversation and
+  group at once, with real speed/ETA for whatever's actively moving right
+  now (`filetransfer.py`'s new `get_transfer_stats`, derived from the same
+  progress callbacks the old per-bubble progress bar already used) and
+  per-row cancel/retry/reveal-in-folder actions plus a "Clear finished"
+  action (reusing the existing per-file delete endpoint, no new backend
+  work needed for that part). Cancel is a real new capability, not just a
+  UI affordance - `filetransfer.py` gained a genuine mid-stream cancel
+  path for both directions, landing on a real "cancelled" status rather
+  than the ambiguous "declined"/"offered" that was all that existed
+  before. A real race was found and fixed during this work, not just
+  reasoned about: a receiver-initiated cancel and a genuine network drop
+  look identical at the raw TCP level, and an early, un-waited version of
+  the fix sometimes lost that race, landing on "offered" instead of
+  "cancelled" - fixed with a short bounded wait for the peer's real
+  explanation before falling back to the generic drop status. Also found
+  and fixed live (not caught by the first pass of automated tests, which
+  bypassed the real `cancel()` method entirely): `cancel()` only matched
+  a sender's "transferring" status, but a receiver's own row is "accepted"
+  during an active stream, never "transferring" - a receiver-initiated
+  cancel silently did nothing until this was caught by a real end-to-end
+  click-through and fixed, with two new permanent regression tests added
+  that exercise the real method (not the bug-masking internal flag
+  directly) to close that exact gap for good. Honest about one thing the
+  design assumes but isn't true yet: the panel says plainly that closing
+  the window currently quits Agora entirely (no tray icon exists yet to
+  keep transfers running in the background - that's the next item).
 
-- [ ] **A system tray icon** (the reference's macOS menu-bar extra -
-  Windows' equivalent is a tray icon) showing live transfer status at a
-  glance and quick actions (Send a file…, Pause all transfers, Open
-  Agora, Quit) without the main window needing to be open or focused.
-  Doesn't exist in `main.cjs` at all currently - a real new Electron
-  surface (`Tray` API), not a window content change.
+- [x] **A system tray icon** - done 2026-10-08, see BUILD_LOG Step 54, the
+  fourth Round 2 item. A real `Tray` icon (not in `main.cjs` at all
+  before), with a live tooltip and context menu showing real counts
+  (peers nearby, active transfers) polled directly from this device's own
+  backend every 5s - not a decorative icon. Closing the window now hides
+  to the tray instead of quitting the whole app (the tray's own Quit item,
+  or the app's own File → Exit, are the two real ways to actually quit).
+  Two of the design's four listed quick actions ("Send a file…", "Pause
+  all transfers") deliberately NOT built, with real reasons rather than
+  silently dropped: "Send a file…" has no sensible single recipient to
+  pick from a bare tray click with no conversation open - "Open Agora"
+  already covers get-to-a-send-screen, just not as one click; "Pause all
+  transfers" has no real backend mechanism distinct from cancel() that
+  behaves symmetrically for both directions (a sender-side cancel already
+  happens to leave a resumable partial file, a receiver-side cancel
+  doesn't - building true direction-symmetric pause/resume is a separate,
+  real project, not a quick tray-menu addition). Verification caveat,
+  consistent with every prior Electron-launch item in this log: the
+  actual GUI (the icon appearing, the menu rendering, a real click) could
+  not be verified live in this sandboxed environment - same documented
+  limitation as Steps 33/45's packaged-app launch tests, re-confirmed
+  rather than glossed over. The code itself was reviewed against
+  Electron's own `Tray`/`Menu` API and the polled endpoints
+  (`GET /peers`, `GET /transfers`) are the same ones already live-verified
+  working in Step 53.
 
-- [ ] **Preferences redesign** (reference screen 10.10): start-Agora-at-
-  login toggle (Electron's `app.setLoginItemSettings`, not currently
-  used), a discovery-method picker (mDNS vs. UDP-broadcast-fallback vs.
-  automatic - the backend already does this internally via `discovery.py`
-  but exposes no choice to the user), a received-files storage breakdown
-  by category with "Reveal folder"/"Clear received files" actions, and a
-  diagnostics panel (device id, reachable peer count, handshake success
-  rate, throughput peak, uptime, "Copy diagnostics" for pasting into a bug
-  report). Current `SettingsScreen.jsx` has none of this - a real rebuild,
-  not a tweak. The reference frames this as a separate OS-style
-  Preferences window rather than an in-app tab; worth deciding whether to
-  match that literally or keep it as a richer tab, since Electron's
-  multi-window story adds real complexity (a second renderer, its own
-  IPC surface) for a UI pattern this app hasn't needed anywhere else yet.
+- [x] **Preferences redesign** (reference screen 10.10) - done
+  2026-10-08, see BUILD_LOG Step 55, the fifth and final Round 2 item.
+  Built as a new sub-view inside the existing `SettingsScreen.jsx`
+  (matching Privacy/Notifications/Voice messages), not a separate OS-
+  style window - consistent with every other settings view already
+  there, and avoiding the real multi-window/second-IPC-surface complexity
+  a literal second Electron window would add for a pattern this app
+  hasn't needed anywhere else. Every piece is real, not a placeholder:
+  - **Start at login**: `app.setLoginItemSettings`/`getLoginItemSettings`,
+    genuinely wasn't used anywhere before this.
+  - **Discovery-method picker**: `discovery.py`'s `PeerDiscovery` gained a
+    real `mode` ("auto"/"mdns"/"udp") that actually gates which of
+    `_start_mdns()`/`_start_udp_fallback()` runs - not just a label on an
+    already-always-both backend. Live-verified with three real backend
+    processes: a `mode="mdns"` instance found its peers exclusively via
+    `source: "mdns"`, a `mode="udp"` instance exclusively via
+    `source: "udp"` - genuinely different discovered-peer sets, not just
+    a cosmetic setting. Persisted the same way a device-name change
+    already is (`identity.json`, a stop+restart of the backend process
+    via a new `discovery:setMode` IPC channel), since the backend only
+    reads `AGORA_DISCOVERY_MODE` once, at startup.
+  - **Storage breakdown**: by real category (Images/Video/Voice notes/
+    Docs/Archives/Apps/Other), computed only from files that genuinely
+    still occupy space on this device (`saved_path` set) - a real,
+    deliberate fix made during this work: an early version double-counted
+    a plain sent file's size even though its bytes are never kept locally
+    after sending, overstating real disk usage with transfer history that
+    isn't actually sitting on disk. "Reveal folder" (the existing
+    `openDownloadsFolder` IPC) and "Clear received files" (the existing
+    per-file delete endpoint, same reuse as the Transfers panel's own
+    "Clear finished"), both live-verified actually changing real backend
+    state, not just the screen's own display.
+  - **Diagnostics panel**: device id, real reachable-peer count, a real
+    key-resolved rate (peers with a resolved public key vs. total seen -
+    the honest proxy for "handshake success" this app's actual trust
+    model has, there's no separate explicit handshake step to count),
+    real peak throughput (the highest speed Step 53's `get_transfer_stats`
+    has ever actually computed on this device), and real process uptime.
+    "Copy diagnostics" copies a real formatted summary to the clipboard.
 
 - [x] **The remaining five desktop reference screens, audited and every
   real gap fixed** (done 2026-10-06, see BUILD_LOG Step 43): 10.3 (group
@@ -1715,33 +1790,48 @@ Found while implementing voice messages against `ui prompt/Agora-standalone.html
 real, deliberately designed screens (9.3-9.4), each a genuinely separate project,
 not attempted alongside the UI rebuild in BUILD_LOG Step 41.
 
-- [ ] **On-device voice message transcription.** The design shows a received
-  voice bubble with a "hold to transcribe" affordance and the transcribed
-  text shown inline, captioned "Transcribed on this device · never
-  uploaded." The real decision this needs before any code: which local
-  speech-to-text engine, since a cloud API would contradict this app's
-  entire no-internet design posture - something like whisper.cpp (a real
-  model file to ship/download, real CPU cost per transcription, a new
-  native dependency the Python backend or Electron main process would
-  need to drive) is the obvious shape, but picking and integrating one is
-  a real project, not a quick addition.
+- [x] **On-device voice message transcription** - done 2026-10-08, see
+  BUILD_LOG Step 49. User picked whisper.cpp after a direct explanation of
+  the feature's purpose and the three engine options' trade-offs. Runs via
+  `pywhispercpp` (prebuilt wheel, no C++ build needed) with `av` decoding
+  the `.webm` straight to PCM in-process (no system ffmpeg dependency). A
+  "Transcribe" button on the bubble shows the text inline, not persisted
+  to the database. One deliberate, documented exception to "fully
+  offline": the model file itself downloads once on first use, same
+  precedent as the GitHub-release update-checker already touching the
+  internet. Verified against real synthesized speech (not just that the
+  code runs), and live through the real button in a real browser.
 
-- [ ] **Voice message read receipts** ("Played by Ada" in the design,
-  under a sent bubble). Needs a new small wire-protocol message (something
-  like `voice_played`, parallel to how `delivered` already works for text)
-  and UI for it - doesn't exist for any file type today, not just voice.
+- [x] **Voice message read receipts** ("Played by Ada" in the design,
+  under a sent bubble) - done 2026-10-08, see BUILD_LOG Step 47. A new
+  `file_played` control message (parallel to `file_complete`), a
+  `played_at` column, and a live WS event so a still-open chat updates
+  without reload. 1:1 shows "Played"; a group bubble (already a collapsed
+  per-recipient aggregate) shows "Played by {name}, {name}" by name, since
+  it can actually tell which members have listened so far. Live-verified
+  with two real backends and two real browser tabs, full regression suite
+  re-run green.
 
-- [ ] **Playback speed control** (1×/1.5×/2× in the design's bubble menu
-  and settings screen). Lighter-weight than the two above - `<audio>`'s
-  own `playbackRate` already does the real work - but needs a UI home: a
-  per-bubble button (shown briefly in the design next to the waveform) and/
-  or the default-speed setting below.
+- [x] **Playback speed control** (1×/1.5×/2× in the design's bubble menu)
+  - done 2026-10-08, see BUILD_LOG Step 48. A small per-bubble button next
+  to the waveform cycles 1×/1.5×/2×, setting `<audio>.playbackRate`
+  directly. Shared by both 1:1 and group chat since both already use the
+  same `VoiceBubblePlayer`. A settings-screen default speed stays part of
+  the dedicated voice-messages settings screen below, not duplicated here.
 
-- [ ] **A dedicated "Voice messages" settings screen** (design's 9.4):
-  toggles for on-device transcription (once built) and default playback
-  speed, plus an audio-quality readout. "Raise to listen" (hold the phone
-  to your ear) is phone-only and has no desktop equivalent - left out of
-  any future version of this screen rather than faked.
+- [x] **A dedicated "Voice messages" settings screen** (design's 9.4) -
+  done 2026-10-08, see BUILD_LOG Step 50, the last of the four voice-
+  message extras, built once the other three had real content to surface.
+  A real toggle for on-device transcription (hides the Transcribe button
+  app-wide when off) and a real default-playback-speed picker (1×/1.5×/2×,
+  applied to every bubble's initial speed), both backed by
+  `lib/voiceSettings.js` (localStorage, same pattern as updateSettings.js).
+  An honest recording-quality readout instead of a fake quality picker,
+  since the browser's own mic encoder doesn't expose one to choose from.
+  "Raise to listen" left out, phone-only, no desktop equivalent. Live-
+  verified: toggling transcription off actually removed the button from a
+  real open conversation, and picking 1.5× actually changed a new bubble's
+  starting speed - not just that the settings screen's own UI updates.
 
 ## Reported 2026-10-06: didn't work over a mobile phone hotspot
 
