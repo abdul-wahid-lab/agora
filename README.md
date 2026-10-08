@@ -4,15 +4,29 @@
 
 **Where this fits:** campuses and classrooms, conferences, airplanes, hospitals during a network outage, disaster/emergency response, remote sites (construction, camps, villages), factories and warehouses, LAN parties, and any privacy-sensitive gathering where a central server is a liability, not a feature.
 
-This repository holds the **working backend** and a **real desktop app**: React UI, running inside Electron with the Python backend spawned automatically, not a browser tab, not mockups. Discovery, messaging, file sharing, voice/video calling, screen sharing, voice messages, and group chat are all real and working today.
+This repository holds the **visual design** (a single interactive canvas covering 39 mobile screens), the **working backend**, and a **real desktop app** (React UI, running inside Electron with the Python backend spawned automatically, not a browser tab, not mockups) - already well past the mobile canvas in actual features, since calling, screen sharing, voice messages, and group chat are all real and working on desktop today.
 
 ## Download
 
 A packaged Windows build is available from the [Releases page](https://github.com/abdul-wahid-lab/agora/releases/latest): a normal installer, or a portable `.exe` that needs no install. See [Run the desktop app](#run-the-desktop-app) below to build it yourself instead.
 
+![Onboarding: splash, permissions, profile setup, and the live nearby-peers view](assets/readme_hero_onboarding.png)
+
 ## Why "Agora"
 
 In ancient Greek city-states, the *agora* was the open public square: the place people physically gathered to talk and trade, with no ruler or central authority presiding over it. That's the shape of this app: no server sitting in the middle of your conversation, no account system, no company routing your messages through its own infrastructure. Just people finding each other in the same local space, here the same WiFi network, and talking directly, the way the agora itself worked: a local gathering place, not a cloud platform.
+
+## View the design
+
+Open [`design/index.html`](design/index.html) in any browser. It's a self-contained page (no build step, no install).
+
+## Desktop app design
+
+A real Electron shell, talking to the local API (see Build status below): a full native-feeling window, not a resized phone screen:
+
+![Desktop onboarding: "Talk to who's around you," name/avatar setup, no account](assets/readme_desktop_welcome.png)
+
+![Desktop calls view with a live incoming-call toast, call history, and call-quality stats](assets/readme_desktop_calls.png)
 
 ## Run the backend
 
@@ -53,18 +67,40 @@ npm run dev
 
 (with a backend already running on port 5001 via `app.api`, as above).
 
-## Features
+## Build status
 
-- **Discovery**: devices find each other on the LAN via mDNS, with a UDP broadcast fallback for networks that filter it, and a configurable discovery-method picker (automatic, mDNS-only, or UDP-only) in Preferences. Peers appear/disappear live as they join and leave, each one shown with a real device-type label and a measured round-trip latency/connection-quality indicator, not a raw IP or a fabricated signal icon. QR-code pairing is a third way to add a peer directly, without waiting on radar.
-- **Messaging**: direct WebSocket between peers, no server in between, messages persisted locally per device, with sent/delivered acknowledgment. A message sent to a peer that's briefly offline is held and delivered exactly once, in order, once that peer reappears. Delete for me, delete for everyone (with the same held-and-retried-on-reconnect guarantee), clearing a whole conversation or the call history, and forwarding a message or a received file are all supported. Group chat, group file sharing, and disappearing messages work the same way.
-- **File sharing**: any file type, offer/accept consent before anything moves, a dedicated connection per transfer so large files stream straight to disk, receiver-side hash verification, and resume from the exact byte offset after a drop. Executable/installable files get a distinctly stronger warning. A dedicated Transfers panel lists every active and recent transfer across every conversation at once, with real throughput/ETA, cancel, retry, and reveal-in-folder. Bandwidth-sharing measurably throttles transfers while a call is active.
-- **Calling**: real peer-to-peer WebRTC audio and video, no STUN/TURN needed since the same subnet never requires it, signaling relayed over the existing WebSocket rather than any cloud service. Deterministic collision handling if both sides call each other at once, a persisted call history, and an incoming-call toast that shows up regardless of which screen you're on. Either side can share their screen mid-call with consent required first. Group calling works as a full mesh, capped at 4 participants.
-- **Voice messages**: hold the mic button to record, release to review (waveform, playback, an optional note) before sending, works inline in both 1:1 and group chats. Playback speed control (1x/1.5x/2x), read receipts ("Played"), and on-device transcription (whisper.cpp, fully offline) are all built in.
-- **Preferences**: start-Agora-at-login, the discovery-method picker above, a storage breakdown by file category with reveal-folder/clear-received-files actions, and a diagnostics panel (device id, reachable peer count, key-resolution rate, peak throughput, uptime).
-- **System tray**: a real tray icon with a live status tooltip (peers nearby, active transfers) and quick actions, independent of whether the main window is open.
+This repo is the design; the app itself is being built in step with it, phase by phase. Current status:
+
+| Phase | Status | Design screens |
+|---|---|---|
+| 1: Discovery | ✅ done | 1.1–1.4c (onboarding), 3.1–3.3 (nearby) |
+| 2: Messaging | ✅ done | 4.1–4.5, 7.2 |
+| 2B: File sharing | ✅ done | 8.1–8.7 |
+| 3: Calling | ✅ done | 5.1–5.6, 5.2b, 7.3, 7.4 |
+| 4: Hybrid mode | ❌ removed by design (LAN/WiFi-only, always; internet availability is never checked) | ~~6.2, 7.1~~ |
+| 5: Polish | ✅ done | 6.1, 6.3–6.5 |
+
+- **Discovery**: devices find each other on the LAN via mDNS, with a UDP broadcast fallback for networks that filter it. Verified: peers appear/disappear live as they join and leave.
+- **Messaging**: direct WebSocket between peers (no server in between), messages persisted locally per device, with sent/delivered acknowledgment. Verified: a message sent to a peer that just dropped off the network is held and delivered exactly once, in order, once that peer reappears. Delete for me, delete for everyone (with the same held-and-retried-on-reconnect guarantee if the other person is briefly offline), clearing a whole conversation or the call history, and forwarding a message or a received file, are all built and working.
+- **File sharing**: any file type, offer/accept consent before anything moves, a dedicated connection per transfer so large files stream straight to disk, receiver-side hash verification, and resume from the exact byte offset after a drop. Executable/installable files get a distinctly stronger warning, plus bandwidth-sharing that measurably throttles transfers while a call is active.
+- **Calling**: real peer-to-peer WebRTC audio and video (no STUN/TURN needed, since the same subnet never requires it), signaling relayed over the existing WebSocket rather than any cloud service. Deterministic collision handling if both sides call each other at once, a persisted call history, and an incoming-call toast that shows up regardless of which screen you're on. Either side can share their screen mid-call (consent required - the other person has to accept before anything is sent), and the person answering a call can share just as freely as the one who placed it.
+- **Voice messages**: hold the mic button to record, release to review (waveform, playback, an optional note) before actually sending - works inline in both 1:1 and group chats, no real-time call required.
+- **Settings**: privacy & security (the current, honest encryption status - see below), notifications (per-peer mute), and an about/help screen with onboarding steps and the running version number.
 - A local API layer (`app.api`, FastAPI) wraps all of the above for the UI to call instead of a human typing into a CLI.
 
-Not built: raising the group-calling cap past 4 people, which needs a real relay design (deliberately deferred, a scaling decision not yet needed), and offline delivery/delete/forward for group messages (both exist for 1:1 chat already).
+**Desktop app**: a real Electron window, not a browser tab:
+
+| Piece | Status |
+|---|---|
+| Local API layer | ✅ done |
+| UI rebuilt to match the actual design file (not an approximation) | ✅ done |
+| Nearby, Chats, Files, Calls: all live, all wired to the real backend | ✅ done |
+| Electron packaging (frameless window, auto-spawned backend, Windows installer) | ✅ done |
+| Group chat, group calling, group file/image sharing | ✅ done (calling capped at 4 people, full mesh, see Architecture below) |
+| Screen sharing (1:1 calls, consent-based) | ✅ done |
+| Voice messages (1:1 and group chat) | ✅ done |
+
+Not built: raising the group-calling cap past 4 people, which needs a real relay design (discussed and deliberately deferred, not a missing feature so much as a scaling decision not yet needed), and offline delivery/delete/forward for group messages (all exist for 1:1 chat already).
 
 ## Architecture
 
@@ -371,9 +407,32 @@ In dev mode, Electron spawns the backend via the dev virtualenv's `python.exe` d
 | `frontend/electron/main.cjs` | Electron main process: spawns the backend, opens the window, wires IPC window controls |
 | `frontend/src/` | React UI (Onboarding, Nearby, Chats, Files, Calls); talks only to the local API, never directly to other peers |
 
+## What's designed here
+
+| Section | Screens |
+|---|---|
+| **Onboarding** | Splash, permissions (with plain-language reasons for each), profile setup (no sign-up), first-run network check (found / empty / blocked states) |
+| **Nearby** | Live peer list with presence indicators, empty/scanning state, peer quick-actions, discovery troubleshooting |
+| **Chats** | Conversation list, 1:1 chat with delivery ticks, group chat, new chat/group creation, per-conversation info |
+| **Calls** | Outgoing/incoming call, call collision handling, active audio/video call, call-ended summary, call history |
+| **Settings** | Network mode (LAN-only vs. hybrid), privacy & security, notifications, about/help |
+| **System states** | Connectivity change banners, router (AP) isolation detected, peer disconnected mid-call |
+| **File sharing** | Send confirmation, transfer progress, a distinct security interstitial for installable files (APKs, etc.), shared-files list |
+
+## Design direction
+
+- **Mood:** warm and local, "same room," not corporate cloud software.
+- **Palette:** warm cream neutrals with a terracotta accent, standing in for presence/signal rather than a cold tech blue.
+- **Type:** Instrument Serif for display headings, Hanken Grotesk for interface text, IBM Plex Mono for technical/metadata labels.
+- **Signature motif:** a recurring "presence pulse" used anywhere a peer is shown as reachable right now, since the entire value of the app is "who can I actually talk to on this network."
+
 ## Security posture (honest, as of now)
 
 - The local API binds to `127.0.0.1` only and its CORS is restricted to the app's own origins. A wildcard wouldn't be safe even on loopback, since any webpage open in any browser could otherwise call it directly with no auth.
 - **Peer-to-peer traffic is end-to-end encrypted.** Every device generates its own X25519 keypair on first run and keeps the private half local forever; public keys are broadcast openly alongside peer_id/name over the existing discovery channel. Any two peers derive the same underlying secret independently (X25519 + HKDF), then split it into two distinct, directional keys - one for each side of the conversation, not one shared key reused both ways - and every message, file chunk, and call-signaling frame after that is encrypted with ChaCha20-Poly1305: authenticated, not just confidential, so a tampered or forged frame is detected and dropped rather than accepted. The directional split exists because a single shared key was tried first, and an actual adversarial test confirmed it was reflectable: a captured message sent to a peer could be bounced straight back at its own sender, who would accept it as genuinely coming from the other side. This does not cover call *media* (audio/video), which was always DTLS-SRTP encrypted by the browser/Electron engine itself regardless.
 - **Trust-on-first-use identity**, the same model SSH and Signal use since there's no central authority here to issue certificates from: the first time a peer_id is ever seen, its public key is remembered. If that same peer_id later shows up with a *different* key, that's surfaced to you as a real, dismissible security warning rather than silently trusted or silently blocked - it could mean a genuine reinstall on their end, or someone else now claiming that identity, and the app doesn't decide which for you.
 - **Discovery broadcasts are signed.** Each device also carries a separate Ed25519 signing keypair (never reused for the X25519 encryption above - a DH key and a signing key are different tools), and every mDNS/UDP discovery announcement is signed with it. A receiver verifies that signature and pins the signing key to that peer_id the first time it's seen, *before* the announcement is ever allowed to affect anything - so a forged broadcast for an already-known peer_id (adversarial testing found this was previously a reliable, repeatable attack: a sustained flood of unsigned forged packets would win that peer_id's entry and redirect its traffic to an attacker's own key) is now rejected outright, whether it's unsigned or self-signed with a freshly-generated attacker key. This still can't protect the very first time a peer_id is ever seen - no trust-on-first-use scheme can, SSH included - so a brand-new contact on a genuinely hostile network still can't be verified out-of-band. Appropriate for a private/trusted LAN, not a hostile one.
+
+## Why this matters for the app itself
+
+Every screen here is tied to a concrete part of how Agora actually works underneath. For example, the peer list reflects live mDNS/UDP discovery results, delivery ticks map to a real send → sent → delivered acknowledgment protocol over direct WebSocket connections, and the file-sharing security interstitial exists because installable files (APKs, executables) are treated as a genuine security decision, not a routine download. This design isn't decoration bolted onto a backend afterward. The backend (peer discovery and LAN messaging) is being built in step with it, and is already working end-to-end in testing.
