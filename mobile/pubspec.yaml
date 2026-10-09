@@ -1,0 +1,149 @@
+name: agora_mobile
+description: "A new Flutter project."
+# The following line prevents the package from being accidentally published to
+# pub.dev using `flutter pub publish`. This is preferred for private packages.
+publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+
+# The following defines the version and build number for your application.
+# A version number is three numbers separated by dots, like 1.2.43
+# followed by an optional build number separated by a +.
+# Both the version and the builder number may be overridden in flutter
+# build by specifying --build-name and --build-number, respectively.
+# In Android, build-name is used as versionName while build-number used as versionCode.
+# Read more about Android versioning at https://developer.android.com/studio/publish/versioning
+# In iOS, build-name is used as CFBundleShortVersionString while build-number is used as CFBundleVersion.
+# Read more about iOS versioning at
+# https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
+# In Windows, build-name is used as the major, minor, and patch parts
+# of the product and file versions while build-number is used as the build suffix.
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.13.5
+
+# Dependencies specify other packages that your package needs in order to work.
+# To automatically upgrade your package dependencies to the latest versions
+# consider running `flutter pub upgrade --major-versions`. Alternatively,
+# dependencies can be manually updated by changing the version numbers below to
+# the latest version available on pub.dev. To see which dependencies have newer
+# versions available, run `flutter pub outdated`.
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # The following adds the Cupertino Icons font to your application.
+  # Use with the CupertinoIcons class for iOS style icons.
+  cupertino_icons: ^1.0.8
+
+  # Discovery: mDNS advertise + browse (Android NsdManager / iOS Bonjour),
+  # matching backend/app/discovery.py's primary path.
+  nsd: ^5.0.1
+  # X25519, Ed25519, ChaCha20-Poly1305, HKDF - must interop byte-for-byte
+  # with backend/app/crypto_identity.py's output.
+  cryptography: ^2.7.0
+  # SHA-256 for file-transfer hash verification (sha256_file equivalent).
+  crypto: ^3.0.6
+  # Local persistence, same per-device-only model as the desktop's agora.db.
+  sqflite: ^2.3.3+1
+  path_provider: ^2.1.4
+  path: ^1.9.0
+  # Calling.
+  flutter_webrtc: ^1.6.2
+  # Keeps discovery/messaging alive when the app isn't in the foreground -
+  # see the known Android background-execution limitation already flagged.
+  flutter_background_service: ^5.0.10
+  # UUIDs for peer_id/transfer_id/etc., matching the backend's uuid4 usage.
+  uuid: ^4.5.1
+  # On-device voice-message transcription (backend/app/transcribe.py's
+  # mobile port) - whisper.cpp via JNI, no cloud, no API key, the model
+  # downloaded once and cached locally after that (same one-time-network-
+  # touch exception the desktop's own update-checker already uses).
+  whisper_ggml: ^2.7.1
+  # Real OS permission requests for the Onboarding > Permissions screen
+  # (microphone, camera, notifications) - "Allow & continue" asks for
+  # these for real, not a decorative button.
+  permission_handler: ^11.3.1
+  # "Choose photo" on the Profile setup screen - a real OS image picker,
+  # not a disabled stand-in (see BUILD_LOG's desktop Step 8 note on why a
+  # fake button is worse than an honestly-disabled one; this just does
+  # the real thing instead).
+  image_picker: ^1.1.2
+  shared_preferences: ^2.3.3
+  # Real OS file picker for the chat "+" attach button, and a real native
+  # "open this file" launcher for the Received file actions sheet - no
+  # fabricated file chooser or disabled Open button.
+  file_picker: ^13.1.0
+  open_filex: ^4.5.0
+  # Real app version/build number for Settings > About, read from the
+  # actual installed package rather than a hand-typed string that could
+  # drift from pubspec.yaml.
+  package_info_plus: ^10.2.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_launcher_icons: ^0.14.3
+
+  # The "flutter_lints" package below contains a set of recommended lints to
+  # encourage good coding practices. The lint set provided by the package is
+  # activated in the `analysis_options.yaml` file located at the root of your
+  # package. See that file for information about deactivating specific lint
+  # rules and activating additional ones.
+  flutter_lints: ^6.0.0
+
+# For information on the generic Dart part of this file, see the
+# following page: https://dart.dev/tools/pub/pubspec
+
+# The following section is specific to Flutter packages.
+flutter:
+
+  # The following line ensures that the Material Icons font is
+  # included with your application, so that you can use the icons in
+  # the material Icons class.
+  uses-material-design: true
+
+  # To add assets to your application, add an assets section, like this:
+  # assets:
+  #   - images/a_dot_burr.jpeg
+  #   - images/a_dot_ham.jpeg
+  assets:
+    - assets/logo.png
+
+  # An image asset can refer to one or more resolution-specific "variants", see
+  # https://flutter.dev/to/resolution-aware-images
+
+  # For details regarding adding assets from package dependencies, see
+  # https://flutter.dev/to/asset-from-package
+
+  # To add custom fonts to your application, add a fonts section here,
+  # in this "flutter" section. Each entry in this list should have a
+  # "family" key with the font family name, and a "fonts" key with a
+  # list giving the asset and other descriptors for the font. For
+  # example:
+  # Exact same three families as the desktop app (frontend/src/index.css),
+  # bundled locally rather than fetched from Google Fonts at runtime - the
+  # whole app's premise is "works with no internet," so a font shouldn't be
+  # the one thing that needs a connection.
+  fonts:
+    - family: Instrument Serif
+      fonts:
+        - asset: assets/fonts/InstrumentSerif-Regular.ttf
+        - asset: assets/fonts/InstrumentSerif-Italic.ttf
+          style: italic
+    - family: Hanken Grotesk
+      fonts:
+        - asset: assets/fonts/HankenGrotesk-Regular.ttf
+        - asset: assets/fonts/HankenGrotesk-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/HankenGrotesk-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/HankenGrotesk-Bold.ttf
+          weight: 700
+    - family: IBM Plex Mono
+      fonts:
+        - asset: assets/fonts/IBMPlexMono-Regular.ttf
+        - asset: assets/fonts/IBMPlexMono-Medium.ttf
+          weight: 500
+  #
+  # For details regarding fonts from package dependencies,
+  # see https://flutter.dev/to/font-from-package
